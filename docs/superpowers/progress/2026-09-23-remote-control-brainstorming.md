@@ -9,8 +9,8 @@
 - 설계(brainstorming)는 끝났고 SP1 spec 이 사용자 승인을 받았다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
 - 클라우드 세션에서 superpowers plugin 없이 진행한다 (D21).
 - **SP1 Phase 0 계획 승인, 실행 중**: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` (작업 브랜치 `claude/sweet-euler-2jtbfa`). 결과는 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 에 task 별로 쌓는다.
-  - 끝남: Task 0~8 (T2 PAKE, T3 Noise KK, T4 str0m, T5 webrtc-rs, T6 Windows 빌드·`::1`, T7 str0m 승인 D23, T8 Workers).
-  - Actions 에서 재실행 중: Task 9 (SYSTEM DPAPI, 판정 자체는 확인됨), Task 12 빌드, Task 13 (WiX).
+  - 끝남: Task 0~9, 13 (T2 PAKE, T3 Noise KK, T4 str0m, T5 webrtc-rs, T6 Windows 빌드·`::1`, T7 str0m 승인 D23, T8 Workers, T9 SYSTEM DPAPI, T13 WiX). Task 12 의 exe 빌드도 끝남.
+  - 사람 PC 용 exe: Actions run 35899681949 의 artifact `win-spikes` (dpapi_probe, sendinput_probe, mf_probe, ipv6-pair, egui_probe). 이후 빌드는 영역별 workflow 의 artifact (`win-probes`, `win-webrtc`, `win-egui`).
   - 사람 대기: Task 10, 11, 12 측정과 T6 의 전역 IPv6 확인은 H1(어느 PC)·H2(PC 정보) 답이 필요하다.
   - 남은 것: Task 14 (종합, spec 반영 승인).
 - 클라우드 세션에는 이전 대화 맥락, 사용자 전역 설정, 로컬 plugin 이 넘어가지 않는다. 사용자 작업 규칙은 저장소 루트 `CLAUDE.md` 에 옮겨 두었다.
