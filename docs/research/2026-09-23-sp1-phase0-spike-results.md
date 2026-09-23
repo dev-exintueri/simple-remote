@@ -115,6 +115,29 @@
 - 사용량: 이 job 은 12분 41초 (Windows 차감 약 26분). 대부분 cache 없는 Rust 빌드 시간이다.
 
 ## T7 WebRTC 라이브러리 결정
+
+- 입력: T4, T5, T6. 규칙(계획 "새로 정한 것" 3번): 질문 5개 통과 수 → Windows 빌드·테스트 → 동점이면 `str0m`.
+
+| 항목 | str0m 0.23.1 | webrtc-rs 0.21.0 |
+|---|---|---|
+| 1. 외부 후보 | 통과. `Candidate::server_reflexive` 로 직접 추가 (같은 socket 의 host 후보 필요) | 통과. API 없음, SDP 문자열 편집 |
+| 2. ICE restart | 통과. 주소 변경 뒤 60ms 재연결 (흉내 네트워크) | 통과. 약 2ms 재연결 (loopback, 주소 변경 없음) |
+| 3. H.264 + PLI | 통과. 내장 packetizer, `Event::KeyframeRequest` | 통과. PLI 수신에 직접 만든 interceptor 필요, SPS/PPS 가 MTU 넘으면 조용히 버림 |
+| 4. data channel | 통과 | 통과 (받는 쪽 설정 보고가 다름) |
+| 5. 대역폭 추정 | **통과**. 1 Mbps 병목에서 0.93 Mbps, 풀리면 4.9 Mbps 까지 회복 | **실패**. 손실 뒤 0.1~0.2 Mbps 로 내려가 회복 못 함 |
+| 통과 수 | 5/5 | 4/5 |
+| Windows MSVC 빌드·테스트 | 통과, 결과 같음 | 통과, 결과 같음 (bwe 실패도 같음) |
+| 구조 | sans-IO: socket·시간을 우리가 넣음. 가짜 네트워크로 결정적 테스트 가능 (spec 9.1 연결 통합·NAT 흉내 테스트) | tokio async, 실제 socket 필요 |
+| crypto backend | aws-lc-rs (C 빌드, Windows 에서 됨), rust-crypto·wincrypto 선택 가능 | ring 기본, aws-lc-rs 선택 가능 |
+
+- 선택안: **str0m 0.23.1**. 근거: 규칙의 첫 기준(통과 수 5 대 4)에서 갈린다. 실패한 항목(대역폭 추정)이 spec 6.2 혼잡 대응의 기반이라 제품에 직접 영향이 있다. 추가로 우회 필요 사항이 적고 sans-IO 구조가 spec 9.1 테스트 방식과 맞다.
+- str0m 을 쓸 때 제품 계획에 넣을 사항
+  - 앱 heartbeat 로 끊김을 판단하고 ICE restart 를 직접 시작한다 (ICE 자체 감지 21초).
+  - UPnP 매핑 후보는 SDP 에 srflx 로 알리고, local 에는 같은 socket 의 host 후보를 함께 둔다.
+  - 경로 기록은 `set_stats_interval` 의 `PeerStats.selected_candidate_pair` 로 만든다.
+  - socket 입출력과 timer 루프는 우리가 만든다 (`ipv6-pair` 의 루프가 최소 형태).
+- 상태: **사람 승인 대기**. 승인되면 진행 기록 결정 기록과 spec 3.3 표를 고친다.
+
 ## T8 Cloudflare Workers 로컬 테스트
 
 - 질문: Cloudflare 계정 없이 Durable Object + WebSocket(Hibernation API)을 로컬 테스트할 수 있나?
