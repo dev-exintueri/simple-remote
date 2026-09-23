@@ -15,9 +15,13 @@ function Check([string] $label, [bool] $ok, [string] $detail = '') {
     Write-Output "CHECK $label ok=$($ok.ToString().ToLower()) $detail"
 }
 
-# Read a file inside the SYSTEM-only folder as SYSTEM.
+# Read a file inside the SYSTEM-only folder as SYSTEM. PsExec does not reliably forward the
+# child's stdout, so SYSTEM copies the content to a temp file the runner account can read.
+# Paths here contain no spaces, so no inner quotes are passed to cmd.
 function Read-AsSystem([string] $path) {
-    & $PsExec -accepteula -nobanner -s cmd /c type "$path" 2>$null | Out-String
+    $tmp = Join-Path $env:RUNNER_TEMP ("read-as-system-" + [guid]::NewGuid() + ".txt")
+    & $PsExec -accepteula -nobanner -s cmd /c "type $path > $tmp 2>&1" 2>$null | Out-Null
+    if (Test-Path $tmp) { Get-Content $tmp | Out-String } else { '' }
 }
 
 $p = Start-Process msiexec.exe -ArgumentList "/i `"$Msi`" /qn /l*v install.log" -Wait -PassThru
@@ -50,7 +54,7 @@ Write-Output $log1
 Check 'service-writes-log' ($log1 -match 'running') ''
 
 # Simulated crash: marker makes the next start exit with code 1 without reporting Stopped.
-& $PsExec -accepteula -nobanner -s cmd /c "echo x> `"$data\crash-once`"" 2>$null
+& $PsExec -accepteula -nobanner -s cmd /c "echo x> $data\crash-once" 2>$null
 Restart-Service $name -Force
 Start-Sleep -Seconds 20
 $log2 = Read-AsSystem (Join-Path $data 'service.log')

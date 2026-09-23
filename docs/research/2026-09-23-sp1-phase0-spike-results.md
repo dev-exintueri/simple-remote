@@ -101,6 +101,19 @@
 - 소스 확인 결과와 합친 우회 필요 사항: local 후보 추가 API 없음(SDP 문자열 편집), PLI 수신에 interceptor 필요, GCC 기본 꺼짐과 추정값 꺼내는 API 없음, SPS/PPS 크기 확인 필요, mDNS 5353 bind 실패가 연결 실패가 됨.
 
 ## T6 WebRTC: Windows 빌드와 IPv6
+
+- 질문: 두 라이브러리가 MSVC 로 빌드되나? Windows 에서도 테스트 결과가 같나? Windows 에서 IPv6 host 후보로 실제 UDP 연결이 되나?
+- 실행: https://github.com/dev-exintueri/simple-remote/actions/runs/35896459536 (commit `7c410cf`, windows-2025)
+- 출력 요약
+  - 빌드: 두 package 모두 MSVC 빌드 성공 (aws-lc-sys, ring 의 C 코드 포함). 테스트 빌드 시간(cache 없음) str0m 2분 45초, webrtc-rs 2분 36초, `ipv6-pair` release 4분 29초.
+  - str0m: 6 passed. 측정값이 Linux 와 같다 (시간을 흉내 내는 가짜 네트워크라 결정적).
+  - webrtc-rs: Linux 와 같게 `bwe` 만 실패 (phase1 끝값 0.22 Mbps, phase2 최대 0.18 Mbps), 나머지 통과. 중계 socket 의 `127.0.0.2` bind 가 Windows 에서도 된다 (계획의 확인할 가정 해소). 신뢰 channel 200건 도착 시간은 17.5초로 Linux(11.05초)보다 길었다.
+  - IPv6: `RESULT ip=::1 ok=true ms=484` (실제 UDP socket, str0m).
+- 클라우드 확인: 이 클라우드 컨테이너는 IPv6 가 없어 `::1` bind 가 `Address family not supported` 로 실패한다. 대신 `127.0.0.1` 로 `ok=true ms=213` 을 확인했다 (계획 2단계의 기대값과 다른 점).
+- 판정: **Actions 부분 통과**. 사람 PC 의 전역 IPv6 주소 확인은 H1 답을 받은 뒤 한다.
+- 계획과 다르게 바꾼 점: webrtc-rs 테스트 step 은 `bwe` 가 Linux 에서 이미 실패로 판정되어 `--no-fail-fast` + `continue-on-error` 로 돌렸다.
+- 사용량: 이 job 은 12분 41초 (Windows 차감 약 26분). 대부분 cache 없는 Rust 빌드 시간이다.
+
 ## T7 WebRTC 라이브러리 결정
 ## T8 Cloudflare Workers 로컬 테스트
 

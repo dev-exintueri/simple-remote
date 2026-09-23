@@ -85,11 +85,19 @@ jobs:
       - name: dpapi as SYSTEM
         working-directory: spikes/win-probes/target/release
         run: |
+          # PsExec does not reliably forward the child's stdout (seen: exit code 0 with lines missing),
+          # so the SYSTEM process writes its output to a file through cmd redirection.
           $probe = (Resolve-Path .\dpapi_probe.exe).Path
           $plain = (Resolve-Path .\plain.txt).Path
           $blob = Join-Path (Get-Location) 'system.bin'
-          & $env:PSEXEC -accepteula -nobanner -s $probe protect $plain $blob 2>&1 | Write-Output
-          $sys = & $env:PSEXEC -accepteula -nobanner -s $probe unprotect $blob 2>&1 | Out-String
+          $o1 = Join-Path $env:RUNNER_TEMP 'sys-protect.txt'
+          $o2 = Join-Path $env:RUNNER_TEMP 'sys-unprotect.txt'
+          & $env:PSEXEC -accepteula -nobanner -s cmd /c "$probe protect $plain $blob > $o1 2>&1"
+          Write-Output "psexec exit=$LASTEXITCODE"
+          Get-Content $o1 | Write-Output
+          & $env:PSEXEC -accepteula -nobanner -s cmd /c "$probe unprotect $blob > $o2 2>&1"
+          Write-Output "psexec exit=$LASTEXITCODE"
+          $sys = Get-Content $o2 | Out-String
           Write-Output $sys
           $sysOk = ($sys -match 'user=SYSTEM') -and ($sys -match 'plaintext=spike-secret')
           Write-Output "RESULT dpapi-system-decrypt ok=$($sysOk.ToString().ToLower())"
