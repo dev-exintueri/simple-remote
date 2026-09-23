@@ -136,7 +136,7 @@
   - UPnP 매핑 후보는 SDP 에 srflx 로 알리고, local 에는 같은 socket 의 host 후보를 함께 둔다.
   - 경로 기록은 `set_stats_interval` 의 `PeerStats.selected_candidate_pair` 로 만든다.
   - socket 입출력과 timer 루프는 우리가 만든다 (`ipv6-pair` 의 루프가 최소 형태).
-- 상태: **사람 승인 대기**. 승인되면 진행 기록 결정 기록과 spec 3.3 표를 고친다.
+- 상태: **사용자 승인 (str0m)**. 진행 기록 D23, spec 3.3 표와 12절에 반영.
 
 ## T8 Cloudflare Workers 로컬 테스트
 

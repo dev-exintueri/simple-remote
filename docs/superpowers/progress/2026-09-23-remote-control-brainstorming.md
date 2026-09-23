@@ -8,8 +8,11 @@
 
 - 설계(brainstorming)는 끝났고 SP1 spec 이 사용자 승인을 받았다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
 - 클라우드 세션에서 superpowers plugin 없이 진행한다 (D21).
-- **SP1 Phase 0 계획 작성 완료, 사용자 검토 대기**: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` (작업 브랜치 `claude/sweet-euler-2jtbfa`). 승인 전에는 구현(spike 실행)을 시작하지 않는다.
-- 다음 할 일: 사용자 검토 반영 → 승인되면 계획 Task 0 부터 실행. Windows 사람 task(10, 11, 12)는 H1(어느 PC 에서 돌릴지) 답이 필요하다.
+- **SP1 Phase 0 계획 승인, 실행 중**: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` (작업 브랜치 `claude/sweet-euler-2jtbfa`). 결과는 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 에 task 별로 쌓는다.
+  - 끝남: Task 0~8 (T2 PAKE, T3 Noise KK, T4 str0m, T5 webrtc-rs, T6 Windows 빌드·`::1`, T7 str0m 승인 D23, T8 Workers).
+  - Actions 에서 재실행 중: Task 9 (SYSTEM DPAPI, 판정 자체는 확인됨), Task 12 빌드, Task 13 (WiX).
+  - 사람 대기: Task 10, 11, 12 측정과 T6 의 전역 IPv6 확인은 H1(어느 PC)·H2(PC 정보) 답이 필요하다.
+  - 남은 것: Task 14 (종합, spec 반영 승인).
 - 클라우드 세션에는 이전 대화 맥락, 사용자 전역 설정, 로컬 plugin 이 넘어가지 않는다. 사용자 작업 규칙은 저장소 루트 `CLAUDE.md` 에 옮겨 두었다.
 
 ### Phase 0 계획을 쓰며 확인한 사실 (spec 과 다른 것 포함)
@@ -50,7 +53,8 @@ Windows spike 는 클라우드 세션이 검사 코드와 실행·결과 보고 
 ### 환경 메모
 
 - 개발에 쓰던 로컬 WSL 의 Rust 는 1.88 이라 업데이트가 필요했다. 클라우드 세션에서는 `rustc --version` 으로 버전을 먼저 확인하고, 필요하면 `rustup update stable` 을 쓴다.
-- Windows 쪽 빌드 도구(MSVC linker 등)는 준비되어 있지 않다. Windows spike 를 어떻게 빌드할지(Windows PC 에서 직접 빌드 / Linux 에서 교차 빌드)는 Phase 0 계획에서 정한다.
+- Windows 빌드는 GitHub Actions `windows-2025` 로 한다 (D22). 사람 PC 에는 빌드 도구가 필요 없다.
+- Actions 의 pwsh step 은 마지막 외부 프로그램의 종료 코드로 끝난다. 기대된 실패를 확인하는 명령 뒤에는 `exit 0` 을 명시한다. PsExec 는 SYSTEM 으로 실행한 프로그램의 stdout 을 잃을 수 있어 파일로 받는다.
 
 ### 클라우드 세션 첫 메시지 (사용자가 붙여 넣을 문장)
 
@@ -255,6 +259,11 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
   - 근거: 클라우드 컨테이너는 MSVC CRT/SDK 다운로드가 막혀 Windows exe 를 링크할 수 없다 (`cargo xwin` 이 `aka.ms` 403). runner 이미지에 Rust, VS 2022 MSVC, Windows SDK, .NET SDK 가 있다. 에이전트가 GitHub 도구로 실행 로그를 직접 읽을 수 있어 사람 없이 고치고 다시 돌릴 수 있다.
   - 비용: 조직은 GitHub Free plan (사용자 답변). private 저장소 한 달 2,000분, Windows 2배 차감이라 약 1,000분. workflow 는 `spikes/**` 변경과 수동 실행에서만 돈다.
   - 진행 기록 "환경 메모"의 "Windows spike 빌드 방식은 Phase 0 계획에서 정한다"는 이것으로 닫힘.
+- D23. WebRTC 라이브러리는 `str0m` 0.23.1 (사용자 승인, Phase 0 Task 7).
+  - 근거: 기능 질문 5개(외부 후보, ICE restart, H.264·PLI, data channel, 대역폭 추정) 모두 통과. `webrtc-rs` 0.21 은 4/5 로 대역폭 추정이 손실 뒤 회복하지 못함 (harness 정상 여부를 진단 실행으로 확인). Windows MSVC 빌드·테스트 결과는 두 라이브러리 모두 Linux 와 같음.
+  - 제품 계획에 넣을 사항: 앱 heartbeat 로 ICE restart 를 직접 시작 (str0m 자체 끊김 감지 21초), UPnP 후보는 같은 socket 의 host 후보와 함께 둠, 경로 기록은 `PeerStats.selected_candidate_pair`, socket·timer 루프는 직접 작성.
+  - spec 3.3 표와 12절 결정 기록에 반영.
+- D24. workflow 경로 조건을 Windows 관련 spike 폴더로 좁힘 (사용자 요청). `spikes/signaling`, `spikes/auth` 처럼 Windows 와 무관한 변경은 Windows 빌드를 돌리지 않는다.
 
 ## 다음 할 일
 
