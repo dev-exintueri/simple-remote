@@ -1,7 +1,7 @@
 # SP1 Phase 0 구현 계획: spike
 
 - 작성일: 2026-09-23
-- 상태: 사용자 검토 대기
+- 상태: 사용자 승인됨, 실행 중
 - spec: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md` (11절 spike 목록이 이 계획의 범위)
 - 진행 기록: `docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md`
 
