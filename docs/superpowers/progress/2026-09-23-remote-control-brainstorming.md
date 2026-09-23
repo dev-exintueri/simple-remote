@@ -2,6 +2,52 @@
 
 이 파일만 읽고 다음 세션이 이어받을 수 있도록 단계가 끝날 때마다 갱신한다.
 
+## 클라우드 세션 인계 (다음 세션이 가장 먼저 읽을 것)
+
+### 현재 상태
+
+- 설계(brainstorming)는 끝났고 SP1 spec 이 사용자 승인을 받았다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
+- 다음 단계는 구현 계획 작성이다. 로컬 세션에서 writing-plans 를 시작하기 직전에 사용자가 이후 작업을 Claude Code 클라우드 세션으로 옮기기로 했다.
+- 클라우드 세션에는 이전 대화 맥락, 사용자 전역 설정, 로컬 plugin 이 넘어가지 않는다. 사용자 작업 규칙은 저장소 루트 `CLAUDE.md` 에 옮겨 두었다.
+
+### 다음 할 일: SP1 Phase 0 계획 (spike)
+
+계획 분할 방침: spike 결과가 WebRTC 라이브러리, UI 라이브러리, PAKE 라이브러리를 정한다. 그 전에 전송·UI 코드까지 상세 계획을 쓰면 확인하지 않은 API 를 추측하게 되므로, SP1 을 순차 계획 여러 개로 나눈다. 먼저 Phase 0(spec 11절 spike) 계획을 상세히 쓰고, 이후 계획은 spike 결과가 나온 뒤 하나씩 쓴다. 계획 파일 위치는 `docs/superpowers/plans/`.
+
+spec 11절 spike 를 실행 위치로 나누면 다음과 같다.
+
+| spike | 실행 위치 | 이유 |
+|---|---|---|
+| WebRTC 라이브러리 (`str0m` / `webrtc-rs`): 외부 후보 추가, ICE restart, H.264 RTP, data channel, 대역폭 추정 | 클라우드(Linux) | loopback 과 network namespace 로 확인 가능. Windows IPv6 후보 동작만 Windows 필요 |
+| PAKE (`spake2` / `opaque-ke`, RFC 9382 테스트 값) | 클라우드 | 순수 Rust |
+| 재접속 key 합의 (Noise KK crate) | 클라우드 | 순수 Rust |
+| Cloudflare Workers 로컬 테스트 도구 (Durable Object, WebSocket) | 클라우드 | Node 로컬 실행, Cloudflare 계정 불필요 |
+| WiX Toolset 버전·이용 조건 | 클라우드(문서 조사) + Windows(MSI 빌드) | |
+| egui: 영상 텍스처 갱신 지연, 한글 IME, Per-Monitor v2 DPI | Windows (사람 실행) | IME, DPI 는 Windows 에서만 의미 있음 |
+| SYSTEM 계정 DPAPI | Windows (사람 실행) | |
+| MF 하드웨어 인코더를 SYSTEM agent 에서 생성, D3D11 texture 입력 | Windows (사람 실행, GPU 필요) | |
+| `SendInput` 절대 좌표 반올림 되읽기 | Windows (사람 실행) | |
+
+Windows spike 는 클라우드 세션이 검사 코드와 실행·결과 보고 방법을 준비하고, 사람이 Windows PC 에서 실행해 결과를 돌려준다.
+
+### 보류 중인 사람 판단
+
+- Windows spike 를 어느 PC 에서 돌릴지. 개발에 쓰던 PC 는 회사 관리 PC(Windows 11 Enterprise)로 보여서, SYSTEM 서비스 설치나 입력 주입 테스트는 개인 Windows PC 에서 하는 것을 권했다. 사용자는 아직 답하지 않았다.
+
+### 환경 메모
+
+- 개발에 쓰던 로컬 WSL 의 Rust 는 1.88 이라 업데이트가 필요했다. 클라우드 세션에서는 `rustc --version` 으로 버전을 먼저 확인하고, 필요하면 `rustup update stable` 을 쓴다.
+- Windows 쪽 빌드 도구(MSVC linker 등)는 준비되어 있지 않다. Windows spike 를 어떻게 빌드할지(Windows PC 에서 직접 빌드 / Linux 에서 교차 빌드)는 Phase 0 계획에서 정한다.
+
+### 클라우드 세션 첫 메시지 (사용자가 붙여 넣을 문장)
+
+```
+CLAUDE.md 와 docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md 의 "클라우드 세션 인계" 절을 먼저 읽어 줘.
+승인된 spec(docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md) 기준으로 SP1 Phase 0(spec 11절 spike) 구현 계획을 작성해 줘.
+superpowers plugin 이 있으면 writing-plans skill 을 쓰고, 계획을 쓰기 전에 필요한 라이브러리 API 는 문서나 소스로 확인해 줘.
+계획이 끝나면 나에게 검토를 요청하고, 승인 전에는 구현을 시작하지 마.
+```
+
 ## 요청 요약 (사용자 원문 기준)
 
 - P2P 연결 기반 원격 제어 프로그램. 연결 중개 서버는 없으면 좋지만, 불가피하면 연결 초기화를 돕는 서버는 허용.
@@ -30,7 +76,7 @@ architectural. 새 프로젝트이고 네트워크·보안·화면 캡처·입�
 | 6. spec 작성·커밋 | 완료 | `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`, commit `4f6f9fe` (develop 브랜치, 조사 문서 3건 포함) |
 | 7. spec self-review | 완료 | 수정: 코드 형식(숫자 6자리), 전송 해상도 비율 유지, ICE restart 20초 기준점, 대기 시간 유지·초기화 조건, 클립보드 제외 형식 단순화 |
 | 8. 사용자 spec 검토 | 완료 | 사용자 승인 (수정 없음). 지시: commit 후 `https://github.com/dev-exintueri/simple-remote.git` 에 push |
-| 9. writing-plans 호출 | 대기 | |
+| 9. writing-plans 호출 | 진행 중 | 진행 기록 commit `b99c675`, `develop` 을 origin(`dev-exintueri/simple-remote`, private)에 push 완료. 원격 기본 브랜치 develop |
 
 ## 조사 산출물 (작성 중)
 
@@ -61,7 +107,7 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 - viewer reverse 연결을 더하면 viewer 가 집에 있을 때 실패가 거의 0. 사용자는 주로 집 밖(D6)이라 효과 제한.
 - signaling: Cloudflare Workers + Durable Objects 무료 plan 으로 충분. STUN: `stun.cloudflare.com` "free and unlimited".
 - Oracle Cloud Always Free: outbound 월 10 TB 무료, E2.1.Micro 는 대역 최대 50 Mbps, idle 회수 정책 있음. → D5 의 이유(트래픽 비용)가 이 조건에서는 성립하지 않을 수 있음. 사용자에게 재확인 필요.
-- 선택지 3개 (공통 전제: 경로 경주 + PAKE 로 채널 묶기): 1) WebRTC ICE (TURN 없음) + Workers signaling 2) QUIC(iroh relay 끔 / quinn) — iroh 는 relay 끄면 hole punching 도 사라짐 3) RustDesk fork (hbbs 만) — AGPL-3.0, 암호화 없이 진행하는 경로와 비 PAKE 비밀번호 수정 필요, reverse 모드 없음, hbbs 용 VM 필요.
+- 선택지 3개 (공통 전제: 경로 경주 + PAKE 로 채널 묶기): 1) WebRTC ICE (TURN 없음) + Workers signaling 2) QUIC(iroh relay 끔 / quinn): iroh 는 relay 끄면 hole punching 도 사라짐 3) RustDesk fork (hbbs 만): AGPL-3.0, 암호화 없이 진행하는 경로와 비 PAKE 비밀번호 수정 필요, reverse 모드 없음, hbbs 용 VM 필요.
 
 ## 결정 기록
 
@@ -193,4 +239,18 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 ## 다음 할 일
 
 - spec 승인 완료. 이 진행 기록도 commit 하고 `develop` 을 `https://github.com/dev-exintueri/simple-remote.git`(private, 빈 저장소) 에 push 한다 (사용자 지시). push 는 전역 git 설정을 바꾸지 않고 gh credential helper 를 1회성으로 사용.
-- push 후 superpowers:writing-plans 로 SP1 구현 계획을 작성한다. 계획의 첫 단계는 spec 11 절 spike 항목(WebRTC 라이브러리, egui, PAKE, SYSTEM DPAPI, MF 인코더, 입력 좌표, WiX, Workers 테스트 도구).
+- push 후 superpowers:writing-plans 로 SP1 구현 계획을 작성한다.
+- writing-plans 진행 상황
+  - 계획 분할 방침: spike 결과가 라이브러리 선택을 정하므로 SP1 을 순차 계획 여러 개로 나눈다. 지금은 Phase 0(spec 11절 spike) 계획을 상세히 쓰고, 이후 계획은 spike 결과 뒤에 작성.
+  - 개발 환경 확인 결과: WSL 에 Rust 1.88(업데이트 필요), Node 24, gh 로그인. Windows 용 target·linker 없음. Windows 쪽은 Windows 11 Enterprise, 그래픽 2개 노트북(Intel Arc + RTX 4070 Laptop), Windows Rust(msvc) 와 .NET 설치, MSVC linker 는 찾지 못함.
+  - 막힌 지점(사람 판단 필요): 이 PC 는 회사 관리 PC 로 보임. SYSTEM 서비스·화면 캡처·입력 주입 테스트를 어디서 돌릴지(이 PC / 개인 PC / VM) 사용자에게 질문했으나 사용자가 질문을 중단함. 답을 받기 전에는 Windows 쪽 환경을 더 조사하지 않는다.
+  - 사용자 새 요청: "이 다음 단계부터 Claude Code 앱에서 cloud 로 진행하고 싶은데 가능한가, 어떻게 진행하는 게 좋은가". 클라우드 세션 사실(환경, 설정 전달, 로컬과 오가기)을 공식 문서로 확인 중. writing-plans 는 이 답이 정해질 때까지 보류.
+  - 확인 결과 (claude-code-guide 조사, code.claude.com/docs 의 claude-code-on-the-web, cloud-environments 문서 기준):
+    - 가능. private org repo 는 Claude GitHub App 을 dev-exintueri org 에 설치하거나 CLI `/web-setup`(로컬 gh token 사용). 시작: claude.ai/code, 데스크톱·모바일 앱 Cloud, CLI `claude --cloud "..."`.
+    - 환경: Ubuntu 24.04 x86_64, Rust·Node 기본 설치, setup script(root) 로 추가 설치, 네트워크 기본값 Trusted(crates.io, npm, GitHub 포함). Windows 실행·GPU 없음.
+    - 옮겨지지 않음: 이 대화 맥락, 사용자 ~/.claude/CLAUDE.md, 사용자 plugin·skill(superpowers, hid-git), memory, 로컬 미push 변경. 옮겨짐: repo 의 CLAUDE.md, .claude/ 설정·skills.
+    - git: 클라우드 세션은 자기 작업 브랜치에만 push → develop 반영은 PR.
+    - 불확실: repo settings 의 enabledPlugins 가 클라우드에서 적용되는지 보고 내용끼리 모순 → 사용자 계정 synced plugin 여부를 직접 확인 필요.
+  - 제안(사용자 응답 대기): 로컬에서 repo CLAUDE.md(신규 작성 예정) + 인계 메모 작성 후 commit·push → 사용자가 GitHub App 설치·plugin 확인 → 클라우드 세션 시작.
+  - 사용자 승인: "1단계 진행해줘". 저장소 루트 `CLAUDE.md` 작성(사용자 전역 규칙 중 이 프로젝트에 필요한 것: 대화 방식, 구현 원칙, 작업 절차, git 규칙), 이 파일 맨 앞에 "클라우드 세션 인계" 절 추가, commit 후 `develop` push.
+  - 남은 사람 할 일: dev-exintueri org 에 Claude GitHub App 설치(또는 CLI `/web-setup`), claude.ai 계정에서 superpowers plugin 사용 가능 여부 확인, 클라우드 세션 시작(저장소 `dev-exintueri/simple-remote`, 브랜치 `develop`, 첫 메시지는 인계 절의 문장). 계획의 첫 단계는 spec 11 절 spike 항목(WebRTC 라이브러리, egui, PAKE, SYSTEM DPAPI, MF 인코더, 입력 좌표, WiX, Workers 테스트 도구).
