@@ -7,8 +7,21 @@
 ### 현재 상태
 
 - 설계(brainstorming)는 끝났고 SP1 spec 이 사용자 승인을 받았다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
-- 다음 단계는 구현 계획 작성이다. 로컬 세션에서 writing-plans 를 시작하기 직전에 사용자가 이후 작업을 Claude Code 클라우드 세션으로 옮기기로 했다.
+- 클라우드 세션에서 superpowers plugin 없이 진행한다 (D21).
+- **SP1 Phase 0 계획 작성 완료, 사용자 검토 대기**: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` (작업 브랜치 `claude/sweet-euler-2jtbfa`). 승인 전에는 구현(spike 실행)을 시작하지 않는다.
+- 다음 할 일: 사용자 검토 반영 → 승인되면 계획 Task 0 부터 실행. Windows 사람 task(10, 11, 12)는 H1(어느 PC 에서 돌릴지) 답이 필요하다.
 - 클라우드 세션에는 이전 대화 맥락, 사용자 전역 설정, 로컬 plugin 이 넘어가지 않는다. 사용자 작업 규칙은 저장소 루트 `CLAUDE.md` 에 옮겨 두었다.
+
+### Phase 0 계획을 쓰며 확인한 사실 (spec 과 다른 것 포함)
+
+- spec 5.7 의 `spake2` 0.4.0 은 RFC 9382 가 아니다 (RFC 이전 draft, Ed25519 만, key 확인 MAC 없음). RFC 9382 테스트 값을 재현하는 crate 는 `pakery-spake2` 0.6.0 + `pakery-crypto` P-256 (1인 프로젝트, 미감사). 계획 Task 2 에서 비교하고 spec 반영은 Task 14.
+- `snow`(Noise KK)는 X25519 만 받는다. spec 4절의 Ed25519 기기 key 로는 바로 못 쓴다 (Task 3).
+- str0m: srflx 후보만 local 에 두면 연결 확인을 받지 못한다. UPnP 매핑 후보는 같은 socket 의 host 후보와 함께 둬야 한다 (Task 4).
+- webrtc-rs 0.21: 비동기 API 에 local 후보 추가 없음, SPS/PPS 가 MTU 를 넘으면 소리 없이 버림, PLI 수신에 interceptor 필요, 대역폭 추정 기본 꺼짐 (Task 5).
+- egui 0.36 은 Rust 1.95 이상, `App::update` 가 없어지고 `ui`/`logic` 으로 나뉨, 기본 글꼴에 한글 없음.
+- `@cloudflare/vitest-pool-workers` 는 `@cloudflare/vitest-plugin` 으로 이름이 바뀜. Node 22 의 npm 10 은 설치 실패, npm 11 필요.
+- WiX 7.0.0 은 OSMF EULA 수락이 있어야 빌드한다 (개인 비영리는 요금 면제). 레지스트리 값 "원래 값 복원"은 WiX 선언으로 안 되고 custom action 이 필요하다.
+- 이 클라우드 컨테이너는 proxy 가 docs.rs, learn.microsoft.com, Microsoft 다운로드를 막는다. API 는 crates.io 에서 받은 crate 소스로 확인했고, Windows exe 링크는 불가하다 (→ D22).
 
 ### 다음 할 일: SP1 Phase 0 계획 (spike)
 
@@ -238,6 +251,10 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 - D21. 클라우드 세션에서 superpowers plugin 사용 불가 → plugin 없이 CLAUDE.md 절차로 진행 (사용자 결정).
   - 확인 근거: 클라우드 세션의 skill 목록에 `superpowers:` skill 이 없고, `~/.claude/plugins/synced/` 의 계정 plugin 폴더가 비어 있음.
   - 함께 한 일: CLAUDE.md "작업 절차"에 구현 계획 형식(머리말 항목, task 구성), 빈칸 금지와 spec 덮임 점검, 실행 출력으로 완료 확인, 원인 확인 후 수정 규칙을 추가 (사용자 지시).
+- D22. Windows spike 빌드·자동 검사는 GitHub Actions `windows-2025` runner 로 한다. 사람 PC 에서는 사람이 봐야 하는 것(GPU 인코더, 입력 좌표, 화면, 한글 IME)만 실행한다 (사용자 수용).
+  - 근거: 클라우드 컨테이너는 MSVC CRT/SDK 다운로드가 막혀 Windows exe 를 링크할 수 없다 (`cargo xwin` 이 `aka.ms` 403). runner 이미지에 Rust, VS 2022 MSVC, Windows SDK, .NET SDK 가 있다. 에이전트가 GitHub 도구로 실행 로그를 직접 읽을 수 있어 사람 없이 고치고 다시 돌릴 수 있다.
+  - 비용: 조직은 GitHub Free plan (사용자 답변). private 저장소 한 달 2,000분, Windows 2배 차감이라 약 1,000분. workflow 는 `spikes/**` 변경과 수동 실행에서만 돈다.
+  - 진행 기록 "환경 메모"의 "Windows spike 빌드 방식은 Phase 0 계획에서 정한다"는 이것으로 닫힘.
 
 ## 다음 할 일
 
