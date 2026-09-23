@@ -1,0 +1,8 @@
+[package]
+name = "spike-webrtc-str0m"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+str0m = { version = "=0.23.1", default-features = false, features = ["aws-lc-rs"] }
