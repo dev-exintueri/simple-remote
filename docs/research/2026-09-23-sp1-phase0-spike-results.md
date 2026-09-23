@@ -167,4 +167,28 @@
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
 ## T12 egui
 ## T13 WiX MSI
+
+- 질문: WiX 7 로 spec 7.1 구성의 MSI 를 만들 수 있나? 설치 후 실제 상태가 선언과 같나? 비정상 종료 뒤 재시작되나? 제거 뒤 흔적이 없나?
+- 실행: https://github.com/dev-exintueri/simple-remote/actions/runs/35903301142 (windows-2025, WiX 7.0.0+b8977d6, job 1분 45초)
+- 출력 요약: `CHECK` 14개 모두 `ok=true`, `RESULT wix ok=true`.
+
+| 항목 | 결과 |
+|---|---|
+| 설치 종료 코드 | 0 |
+| 서비스 | 존재, `StartName=LocalSystem`, `StartMode=Auto`, `Running` |
+| 실패 동작 (`sc qfailure`) | RESTART 5000ms × 3, reset 86400초 |
+| 방화벽 규칙 | 프로그램 `C:\Program Files\SimpleRemoteSpike\spike-service.exe` 한정 |
+| 데이터 폴더 ACL | `NT AUTHORITY\SYSTEM:(OI)(CI)(F)` 하나, 상속 없음 (SYSTEM 으로 icacls). 관리자 계정은 ACL 읽기와 파일 보기 모두 거부됨 |
+| 서비스 로그 기록 | 5초마다 기록 |
+| 비정상 종료 뒤 재시작 | 종료 코드 1 로 끝난 뒤 약 7초 만에 새 pid 로 재시작 (pid 4744 → 8848 종료 → 8756) |
+| 제거 | 종료 코드 0, 서비스·Program Files·ProgramData·방화벽 규칙 모두 사라짐 |
+
+- 판정: **통과**.
+- 실행 중 발견하고 고친 것 (제품 설계에 영향)
+  1. `util:RemoveFolderEx` 는 SYSTEM 전용 폴더를 지우지 못한다. immediate custom action 이라 설치 사용자 권한으로 돌아 폴더 목록을 읽다가 `0x80070005` 로 실패하고, WiX 는 이를 성공으로 바꿔 처리해 조용히 폴더가 남는다 (uninstall 로그 확인). `RemoveFiles` 앞에서 LocalSystem 으로 도는 deferred custom action(`Impersonate="no"`, `cmd /c rmdir`)으로 바꿔 해결. 조건 `REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE` 로 업그레이드 때는 데이터를 남긴다 (업그레이드 경로 자체는 이 spike 에서 실행하지 않음).
+  2. 관리자 계정은 SYSTEM 전용 폴더의 ACL 조차 읽지 못한다. 흔적 검사 script(spec 7.3)는 SYSTEM 으로 실행하거나 SYSTEM 으로 읽는 부분을 둬야 한다.
+- 설계 영향 (Task 14 에서 spec 반영 승인 요청)
+  - spec 7.1: 데이터 삭제와 `SoftwareSASGeneration` 원래 값 복원 둘 다 WiX 선언만으로 안 되고 LocalSystem deferred custom action 이 필요하다. `RegistryValue` 의 Action 은 `append|prepend|write` 뿐이다 (WiX xsd).
+  - 이용 조건: WiX 7 은 `-acceptEula wix7` 이 있어야 빌드한다. 개인 비영리는 OSMF 요금 면제.
+
 ## 종합
