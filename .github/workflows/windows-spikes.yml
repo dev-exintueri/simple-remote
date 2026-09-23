@@ -56,6 +56,24 @@ jobs:
           .\mf_probe.exe
           .\mf_probe.exe --software
 
+      # Task 6
+      - name: webrtc str0m tests
+        working-directory: spikes/webrtc-str0m
+        run: cargo test -- --nocapture --test-threads=1
+
+      # Task 6 (bwe is a known failure on Linux, see results T5; do not stop the job)
+      - name: webrtc-rs tests
+        continue-on-error: true
+        working-directory: spikes/webrtc-rs
+        run: cargo test --no-fail-fast -- --nocapture --test-threads=1
+
+      # Task 6
+      - name: ipv6 pair on ::1
+        working-directory: spikes/ipv6-pair
+        run: |
+          cargo build --release
+          .\target\release\ipv6-pair.exe ::1
+
       # Task 1 (Task 6, 12 add their exe paths below)
       - name: upload exes
         if: always()
@@ -64,5 +82,6 @@ jobs:
           name: win-spikes
           path: |
             spikes/win-probes/target/release/*.exe
+            spikes/ipv6-pair/target/release/ipv6-pair.exe
           if-no-files-found: warn
           retention-days: 14
