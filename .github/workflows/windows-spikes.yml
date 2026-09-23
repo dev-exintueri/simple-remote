@@ -1,0 +1,68 @@
+# Spike only (throwaway): Windows build and automated checks for SP1 Phase 0.
+# Plan: docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md
+name: windows-spikes
+
+on:
+  push:
+    paths:
+      - 'spikes/**'
+      - '.github/workflows/windows-spikes.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      # Task 1
+      - uses: actions/checkout@v7
+
+      # Task 1
+      - name: toolchain
+        working-directory: spikes
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      # Task 1
+      - name: build win-probes
+        working-directory: spikes/win-probes
+        run: cargo build --release --bins
+
+      # Task 1
+      - name: dpapi roundtrip (runner account)
+        working-directory: spikes/win-probes/target/release
+        run: |
+          Set-Content -Path plain.txt -Value 'spike-secret' -NoNewline -Encoding ascii
+          .\dpapi_probe.exe protect plain.txt user.bin
+          $out = .\dpapi_probe.exe unprotect user.bin | Out-String
+          Write-Output $out
+          $ok = $out -match 'plaintext=spike-secret'
+          Write-Output "dpapi roundtrip RESULT ok=$($ok.ToString().ToLower()) user=$env:USERNAME"
+          if (-not $ok) { exit 1 }
+
+      # Task 1 (informational: hosted runners have no GPU)
+      - name: mf_probe (informational)
+        continue-on-error: true
+        working-directory: spikes/win-probes/target/release
+        run: |
+          .\mf_probe.exe
+          .\mf_probe.exe --software
+
+      # Task 1 (Task 6, 12 add their exe paths below)
+      - name: upload exes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-spikes
+          path: |
+            spikes/win-probes/target/release/*.exe
+          if-no-files-found: warn
+          retention-days: 14
