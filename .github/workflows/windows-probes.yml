@@ -1,12 +1,14 @@
-# Spike only (throwaway): Windows build and automated checks for SP1 Phase 0.
+# Spike only (throwaway): win-probes build, runner and SYSTEM DPAPI checks (Tasks 1, 9)
 # Plan: docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md
-name: windows-spikes
+# Runs only when its own spike folders change (decision D24). Edits to this workflow file alone
+# do not trigger it; use workflow_dispatch or touch a file in the listed folders.
+name: windows-probes
 
 on:
   push:
     paths:
-      - 'spikes/**'
-      - '.github/workflows/windows-spikes.yml'
+      - 'spikes/win-probes/**'
+      - 'spikes/rust-toolchain.toml'
   workflow_dispatch:
 
 permissions:
@@ -19,10 +21,8 @@ jobs:
       run:
         shell: pwsh
     steps:
-      # Task 1
       - uses: actions/checkout@v7
 
-      # Task 1
       - name: toolchain
         working-directory: spikes
         run: |
@@ -31,12 +31,10 @@ jobs:
           rustc --version
           cargo --version
 
-      # Task 1
       - name: build win-probes
         working-directory: spikes/win-probes
         run: cargo build --release --bins
 
-      # Task 1
       - name: dpapi roundtrip (runner account)
         working-directory: spikes/win-probes/target/release
         run: |
@@ -56,32 +54,12 @@ jobs:
           .\mf_probe.exe
           .\mf_probe.exe --software
 
-      # Task 6
-      - name: webrtc str0m tests
-        working-directory: spikes/webrtc-str0m
-        run: cargo test -- --nocapture --test-threads=1
-
-      # Task 6 (bwe is a known failure on Linux, see results T5; do not stop the job)
-      - name: webrtc-rs tests
-        continue-on-error: true
-        working-directory: spikes/webrtc-rs
-        run: cargo test --no-fail-fast -- --nocapture --test-threads=1
-
-      # Task 6
-      - name: ipv6 pair on ::1
-        working-directory: spikes/ipv6-pair
-        run: |
-          cargo build --release
-          .\target\release\ipv6-pair.exe ::1
-
-      # Task 9
       - name: fetch PsExec
         run: |
           Invoke-WebRequest -Uri https://download.sysinternals.com/files/PSTools.zip -OutFile $env:RUNNER_TEMP\PSTools.zip
           Expand-Archive $env:RUNNER_TEMP\PSTools.zip -DestinationPath $env:RUNNER_TEMP\pstools
           "PSEXEC=$env:RUNNER_TEMP\pstools\PsExec64.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # Task 9
       - name: dpapi as SYSTEM
         working-directory: spikes/win-probes/target/release
         run: |
@@ -111,45 +89,12 @@ jobs:
           if (-not ($sysOk -and $adminOk)) { exit 1 }
           exit 0
 
-      # Task 12
-      - name: build egui-probe
-        working-directory: spikes/egui-probe
-        run: cargo build --release
-
-      # Task 13
-      - name: wix build, install, check, uninstall
-        working-directory: spikes/wix
-        run: |
-          dotnet tool install --global wix --version 7.0.0
-          $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe"
-          & $wix --version
-          & $wix extension add -g WixToolset.Util.wixext/7.0.0 -acceptEula wix7
-          & $wix extension add -g WixToolset.Firewall.wixext/7.0.0 -acceptEula wix7
-          cargo build --release --manifest-path service\Cargo.toml
-          Copy-Item service\target\release\spike-service.exe .
-          & $wix build Spike.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.Firewall.wixext -acceptEula wix7 -o SimpleRemoteSpike.msi
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          .\check.ps1 -Msi (Resolve-Path .\SimpleRemoteSpike.msi).Path -PsExec $env:PSEXEC
-
-      # Task 13
-      - name: upload wix logs
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: wix-logs
-          path: spikes/wix/*.log
-          if-no-files-found: ignore
-          retention-days: 7
-
-      # Task 1 (Task 6, 12 add their exe paths below)
       - name: upload exes
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: win-spikes
+          name: win-probes
           path: |
             spikes/win-probes/target/release/*.exe
-            spikes/ipv6-pair/target/release/ipv6-pair.exe
-            spikes/egui-probe/target/release/egui_probe.exe
           if-no-files-found: warn
           retention-days: 14

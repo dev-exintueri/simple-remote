@@ -15,14 +15,16 @@ function Check([string] $label, [bool] $ok, [string] $detail = '') {
     Write-Output "CHECK $label ok=$($ok.ToString().ToLower()) $detail"
 }
 
-# Read a file inside the SYSTEM-only folder as SYSTEM. PsExec does not reliably forward the
-# child's stdout, so SYSTEM copies the content to a temp file the runner account can read.
+# Run a cmd command line as SYSTEM and return its output. PsExec does not reliably forward the
+# child's stdout, so SYSTEM writes to a temp file the runner account can read.
 # Paths here contain no spaces, so no inner quotes are passed to cmd.
-function Read-AsSystem([string] $path) {
-    $tmp = Join-Path $env:RUNNER_TEMP ("read-as-system-" + [guid]::NewGuid() + ".txt")
-    & $PsExec -accepteula -nobanner -s cmd /c "type $path > $tmp 2>&1" 2>$null | Out-Null
+function Invoke-AsSystem([string] $commandLine) {
+    $tmp = Join-Path $env:RUNNER_TEMP ("as-system-" + [guid]::NewGuid() + ".txt")
+    & $PsExec -accepteula -nobanner -s cmd /c "$commandLine > $tmp 2>&1" 2>$null | Out-Null
     if (Test-Path $tmp) { Get-Content $tmp | Out-String } else { '' }
 }
+
+function Read-AsSystem([string] $path) { Invoke-AsSystem "type $path" }
 
 $p = Start-Process msiexec.exe -ArgumentList "/i `"$Msi`" /qn /l*v install.log" -Wait -PassThru
 Check 'install-exit-code' ($p.ExitCode -eq 0) "code=$($p.ExitCode)"
@@ -41,10 +43,15 @@ $rule = Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Di
 $ruleProgram = if ($rule) { ($rule | Get-NetFirewallApplicationFilter).Program } else { '' }
 Check 'firewall-rule-program' ($null -ne $rule -and $ruleProgram -eq $exe) "Program=$ruleProgram"
 
-icacls $data | Write-Output
-$acl = Get-Acl $data -ErrorAction SilentlyContinue
-$ids = if ($acl) { @($acl.Access | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique) } else { @() }
-Check 'data-acl-system-only' ($acl -and $acl.AreAccessRulesProtected -and $ids.Count -eq 1 -and $ids[0] -eq 'NT AUTHORITY\SYSTEM') "ids=$($ids -join ';')"
+# The admin account cannot read the DACL of a SYSTEM-only folder (icacls: Access is denied),
+# so the ACL is read as SYSTEM and parsed from icacls output.
+$aclText = Invoke-AsSystem "icacls $data"
+Write-Output $aclText
+# icacls prints "<path> <principal>:(flags)" then "<spaces><principal>:(flags)" per ACE.
+$aclBody = $aclText.Replace($data, '')
+$principals = @([regex]::Matches($aclBody, '(?m)^\s*(.+?):\(') | ForEach-Object { $_.Groups[1].Value.Trim() } | Sort-Object -Unique)
+$inherited = $aclText -match '\(I\)'
+Check 'data-acl-system-only' ($principals.Count -eq 1 -and $principals[0] -eq 'NT AUTHORITY\SYSTEM' -and -not $inherited) "principals=$($principals -join ';') inherited=$inherited"
 $adminRead = Test-Path (Join-Path $data 'service.log') -ErrorAction SilentlyContinue
 Write-Output "admin can see service.log: $adminRead"
 
@@ -67,7 +74,16 @@ $u = Start-Process msiexec.exe -ArgumentList "/x `"$Msi`" /qn /l*v uninstall.log
 Check 'uninstall-exit-code' ($u.ExitCode -eq 0) "code=$($u.ExitCode)"
 Check 'trace-service-gone' ($null -eq (Get-CimInstance Win32_Service -Filter "Name='$name'"))
 Check 'trace-programfiles-gone' (-not (Test-Path 'C:\Program Files\SimpleRemoteSpike'))
-Check 'trace-programdata-gone' (-not (Test-Path $data))
+$dataGone = -not (Test-Path $data)
+Check 'trace-programdata-gone' $dataGone
+if (-not $dataGone) {
+    Write-Output '--- left in ProgramData (as SYSTEM) ---'
+    Invoke-AsSystem "dir /s /a $data" | Write-Output
+    Write-Output '--- uninstall.log lines about RemoveFolderEx / SPIKEDATADIR ---'
+    Select-String -Path uninstall.log -Pattern 'RemoveFolder|SPIKEDATADIR|WixRemoveFoldersEx|RemoveFiles' | ForEach-Object { $_.Line } | Write-Output
+    Write-Output '--- install.log lines about SPIKEDATADIR ---'
+    Select-String -Path install.log -Pattern 'SPIKEDATADIR' | Select-Object -First 5 | ForEach-Object { $_.Line } | Write-Output
+}
 Check 'trace-firewall-gone' ($null -eq (Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'SimpleRemote Spike' }))
 
 $all = -not ($results.Values -contains $false)

@@ -152,6 +152,17 @@
   - Durable Object 는 SQLite 기반(`new_sqlite_classes`)으로 선언했다. 무료 plan 에서 쓸 수 있는 방식인지는 배포 계획(signaling 계획)에서 Cloudflare 문서로 확인한다 (이 컨테이너는 developers.cloudflare.com 이 막혀 있음).
 
 ## T9 SYSTEM 계정 DPAPI
+
+- 질문: LocalSystem 이 `CryptProtectData`(entropy 없음, `CRYPTPROTECT_LOCAL_MACHINE` 없음)로 암호화한 데이터를 SYSTEM 은 풀고 관리자 계정은 못 푸나?
+- 기준: SYSTEM 복호화 `plaintext=spike-secret`, 관리자 복호화 오류.
+- 실행: https://github.com/dev-exintueri/simple-remote/actions/runs/35899681949 (windows-2025, PsExec `-s`, SYSTEM 은 session 0)
+- 출력 요약: `RESULT dpapi-system-decrypt ok=true`, 관리자(`runneradmin`, 관리자 권한) 복호화는 `HRESULT(0x8009000B) Key not valid for use in specified state.`, `RESULT dpapi-admin-decrypt ok=true`.
+- 판정: **통과**. spec 4절의 "SYSTEM 계정 범위 DPAPI" 가정이 맞다. 관리자 계정도 API 로는 풀 수 없다 (관리자가 SYSTEM 으로 프로그램을 띄우면 풀 수 있다는 점은 DPAPI 의 경계 밖이며, 파일 권한 SYSTEM 전용과 같은 수준의 보호다).
+- 실행 중 겪은 문제와 원인 (판정과 무관, 이후 Windows 검사 코드에 적용)
+  - PsExec 가 SYSTEM 으로 실행한 프로그램의 stdout 줄을 잃었다 (종료 코드 0 인데 출력 누락). SYSTEM 프로세스가 `cmd /c ... > 파일` 로 쓰고 읽는 방식으로 바꿨다.
+  - GitHub pwsh step 은 마지막 외부 프로그램의 `$LASTEXITCODE` 로 끝난다. 기대된 실패(관리자 복호화)가 마지막 명령이면 판정이 통과여도 step 이 실패한다. `exit 0` 을 명시했다.
+- Task 11 (사람 PC) 에서도 PsExec 출력이 비면 같은 방식(`cmd /c ... > 파일`)으로 받는다.
+
 ## T10 SendInput 절대 좌표
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
 ## T12 egui
