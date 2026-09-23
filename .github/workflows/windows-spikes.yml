@@ -106,7 +106,10 @@ jobs:
           # Expected: the admin (runner) account can NOT decrypt the SYSTEM blob.
           $adminOk = -not ($admin -match 'plaintext=spike-secret')
           Write-Output "RESULT dpapi-admin-decrypt ok=$($adminOk.ToString().ToLower())"
+          # The admin decrypt above is expected to fail and leaves $LASTEXITCODE=1; the pwsh step
+          # wrapper exits with $LASTEXITCODE, so exit explicitly with the verdict.
           if (-not ($sysOk -and $adminOk)) { exit 1 }
+          exit 0
 
       # Task 12
       - name: build egui-probe

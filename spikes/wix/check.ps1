@@ -73,3 +73,4 @@ Check 'trace-firewall-gone' ($null -eq (Get-NetFirewallRule -ErrorAction Silentl
 $all = -not ($results.Values -contains $false)
 Write-Output "RESULT wix ok=$($all.ToString().ToLower())"
 if (-not $all) { exit 1 }
+exit 0
