@@ -103,6 +103,18 @@
 ## T6 WebRTC: Windows 빌드와 IPv6
 ## T7 WebRTC 라이브러리 결정
 ## T8 Cloudflare Workers 로컬 테스트
+
+- 질문: Cloudflare 계정 없이 Durable Object + WebSocket(Hibernation API)을 로컬 테스트할 수 있나?
+- 기준: 테스트 4건 통과, `tsc --noEmit` 통과, 로그인 없이.
+- 실행 환경: Linux x86_64 (클라우드), Node 22.22.2, npm 11 (`npx -y npm@11 install`), `@cloudflare/vitest-plugin` 1.2.4, vitest 4.1.11, wrangler 4.137.0, workerd 1.20260921.1, `@cloudflare/workers-types` 5.20260923.1, typescript 5.9.3.
+- 출력 요약: 구현 전 실행은 `src/index.ts` 를 찾지 못해 실패. 구현 후 `Tests 4 passed (4)` (같은 방 전달 18ms, 다른 방으로 새지 않음, WebSocket 아닌 요청 426, DO 안 socket 2개), `tsc --noEmit` 출력 없음. `~/.wrangler` 가 없고 로그인·token 을 쓰지 않았다.
+- 판정: **통과**.
+- 설계 영향과 주의
+  - 테스트 도구 이름은 `@cloudflare/vitest-plugin` (1.0 에서 `@cloudflare/vitest-pool-workers` 가 바뀜). 설정은 `vitest/config` 의 `defineConfig` + `cloudflareTest({ wrangler: { configPath } })` plugin. vitest 5 는 peerDependency 밖이라 4.1 을 쓴다.
+  - `cloudflare:test` 의 `SELF`, `env` 는 deprecated. `cloudflare:workers` 의 `exports.default.fetch`, `env` 를 쓴다.
+  - Node 22 에 딸린 npm 10.9.7 은 이 의존성 조합에서 설치에 실패한다 (`edgesOut` null). npm 11 을 쓴다. npm 11 은 esbuild, workerd 의 postinstall 을 승인 없이 실행하지 않는데, 플랫폼별 binary package 가 따로 설치되어 테스트는 동작한다.
+  - Durable Object 는 SQLite 기반(`new_sqlite_classes`)으로 선언했다. 무료 plan 에서 쓸 수 있는 방식인지는 배포 계획(signaling 계획)에서 Cloudflare 문서로 확인한다 (이 컨테이너는 developers.cloudflare.com 이 막혀 있음).
+
 ## T9 SYSTEM 계정 DPAPI
 ## T10 SendInput 절대 좌표
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
