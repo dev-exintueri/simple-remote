@@ -74,6 +74,32 @@ jobs:
           cargo build --release
           .\target\release\ipv6-pair.exe ::1
 
+      # Task 9
+      - name: fetch PsExec
+        run: |
+          Invoke-WebRequest -Uri https://download.sysinternals.com/files/PSTools.zip -OutFile $env:RUNNER_TEMP\PSTools.zip
+          Expand-Archive $env:RUNNER_TEMP\PSTools.zip -DestinationPath $env:RUNNER_TEMP\pstools
+          "PSEXEC=$env:RUNNER_TEMP\pstools\PsExec64.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Task 9
+      - name: dpapi as SYSTEM
+        working-directory: spikes/win-probes/target/release
+        run: |
+          $probe = (Resolve-Path .\dpapi_probe.exe).Path
+          $plain = (Resolve-Path .\plain.txt).Path
+          $blob = Join-Path (Get-Location) 'system.bin'
+          & $env:PSEXEC -accepteula -nobanner -s $probe protect $plain $blob 2>&1 | Write-Output
+          $sys = & $env:PSEXEC -accepteula -nobanner -s $probe unprotect $blob 2>&1 | Out-String
+          Write-Output $sys
+          $sysOk = ($sys -match 'user=SYSTEM') -and ($sys -match 'plaintext=spike-secret')
+          Write-Output "RESULT dpapi-system-decrypt ok=$($sysOk.ToString().ToLower())"
+          $admin = & $probe unprotect $blob 2>&1 | Out-String
+          Write-Output $admin
+          # Expected: the admin (runner) account can NOT decrypt the SYSTEM blob.
+          $adminOk = -not ($admin -match 'plaintext=spike-secret')
+          Write-Output "RESULT dpapi-admin-decrypt ok=$($adminOk.ToString().ToLower())"
+          if (-not ($sysOk -and $adminOk)) { exit 1 }
+
       # Task 1 (Task 6, 12 add their exe paths below)
       - name: upload exes
         if: always()
