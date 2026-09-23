@@ -1,0 +1,17 @@
+[package]
+name = "spike-auth"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+spake2 = "=0.4.0"
+rand_core_06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }
+pakery-spake2 = { version = "=0.6.0", features = ["test-utils"] }
+pakery-core = "=0.6.0"
+pakery-crypto = { version = "=0.6.0", default-features = false, features = ["std", "p256", "spake2"] }
+rand_core = "0.10"
+getrandom = { version = "0.4", features = ["sys_rng"] }
+snow = "=0.10.0"
+hex = "0.4"
+num-bigint = "0.4"
