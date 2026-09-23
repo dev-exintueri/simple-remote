@@ -235,6 +235,9 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 - D20. 섹션 6 승인 (6-5 순단 대비 포함). 설계 전체 승인 완료 → spec 작성 단계로 이동.
   - spec 경로: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
   - commit 계획: 사용자 Gitflow 규칙(develop 이 기본 브랜치, master 는 배포 기록)에 따라 빈 repo 의 첫 commit 을 `develop` 브랜치에 만든다. spec 과 근거 조사 문서 3건을 함께 commit, 이 진행 기록 파일은 commit 하지 않음.
+- D21. 클라우드 세션에서 superpowers plugin 사용 불가 → plugin 없이 CLAUDE.md 절차로 진행 (사용자 결정).
+  - 확인 근거: 클라우드 세션의 skill 목록에 `superpowers:` skill 이 없고, `~/.claude/plugins/synced/` 의 계정 plugin 폴더가 비어 있음.
+  - 함께 한 일: CLAUDE.md "작업 절차"에 구현 계획 형식(머리말 항목, task 구성), 빈칸 금지와 spec 덮임 점검, 실행 출력으로 완료 확인, 원인 확인 후 수정 규칙을 추가 (사용자 지시).
 
 ## 다음 할 일
 
