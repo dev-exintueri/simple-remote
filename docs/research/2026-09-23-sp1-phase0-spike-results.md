@@ -4,6 +4,19 @@
 형식: 질문 / 기준 / 실행 환경(OS, 버전, 명령) / 출력 요약 / 판정(통과·실패·부분) / 설계 영향.
 
 ## T1 GitHub Actions Windows 빌드
+
+- 질문: Actions 가 켜져 있나? `windows-2025` 에서 Rust spike 를 빌드·실행할 수 있나? 한 번에 몇 분 걸리나?
+- 기준: workflow 실행, `winprobe` 빌드, runner 계정 DPAPI 왕복 성공, artifact 업로드.
+- 실행: https://github.com/dev-exintueri/simple-remote/actions/runs/35894682472 (commit `7fcd83e`)
+- 출력 요약
+  - job 전체 1분 21초. toolchain 1.95 설치 14초, `win-probes` release 빌드(cache 없음) 45초.
+  - `user=runneradmin session=2`. DPAPI 왕복 `plaintext=spike-secret`, `dpapi roundtrip RESULT ok=true`.
+  - `mf_probe`: H.264 인코더 1개 `H264 Encoder MFT (hardware=false)`. 하드웨어 모드는 인코더 없음(GPU 없음, 예상대로). 소프트웨어 모드 `frames_in=30 frames_out=27 bytes_out=19753 first_output_ms=62`. runner(Windows Server 2025)에 Media Foundation 이 있다.
+  - artifact `win-spikes` (exe 3개, 234 KB) 업로드 성공.
+- 판정: **통과**.
+- 사용량 계산: 이 job 은 분 단위 올림으로 2분, Windows 2배 차감으로 4분. WebRTC 테스트와 WiX 가 더해진 뒤의 시간은 T6, T13 에서 다시 잰다. 이 크기면 한 달 1,000분(Windows 기준)에서 약 250회.
+- 참고: runner 는 session 2 의 대화형 세션에서 돈다 (session 0 서비스가 아님). T10 의 SendInput 도 runner 에서 해 볼 수 있으나 모니터 구성이 하나뿐이라 사람 PC 확인을 대신하지 못한다.
+
 ## T2 PAKE
 
 - 질문: RFC 9382 테스트 값을 재현하는 Rust SPAKE2 구현이 있나? 틀린 코드를 key 확인 단계에서 거부하나? spec 5.7 의 후보 `spake2` 0.4.0 은 RFC 9382 를 따르나?
@@ -65,6 +78,28 @@
   - 한계: 가짜 네트워크의 지연은 몇 ms 수준이라 시간 값은 실제 인터넷보다 짧다.
 
 ## T5 WebRTC: webrtc-rs
+
+- 질문: T4 와 같은 5개.
+- 기준: 테스트 파일 5개 통과.
+- 실행 환경: Linux x86_64 (클라우드), rustc 1.95.0, webrtc/rtc 0.21.0, tokio multi_thread, 실제 loopback UDP socket + 손실·병목을 넣는 UDP 중계 task. `cd spikes/webrtc-rs && cargo test --no-fail-fast -- --nocapture --test-threads=1` (bwe 41초, 나머지 4개 파일 20초)
+- 출력 요약: 8건 중 7 passed, `bwe` 1 failed.
+
+| 질문 | 판정 | 측정값 |
+|---|---|---|
+| 1. 외부 후보 | 통과 | SDP 의 후보를 지우고 srflx 줄을 넣는 방식으로 812ms 에 연결. offerer 선택 경로 `127.0.0.2:40000 (srflx)`, answerer 는 상대를 prflx 로 앎 |
+| 2. ICE restart | 통과 | `RTCOfferOptions{ice_restart}`, `restart_ice()`, socket 재bind 3가지 모두 ufrag 교체 후 약 2ms 에 재연결, 같은 DataChannel 로 왕복 약 5ms. viewer 주소 변경 후 끊김 감지 시간은 이 테스트에 없음 |
+| 3. H.264 | 통과 | FU-A 조각 재조립이 byte 단위로 같음. PLI 는 직접 만든 interceptor 로 offerer 앱에 2건 도착. SPS/PPS STAP-A 가 MTU 를 넘으면 조용히 버려지는 동작을 unit test 로 확인 |
+| 4. data channel | 통과 | 5번째마다 손실. 신뢰 200/200 순서대로 (11.05초), 비신뢰 152 수신. 단 answerer 쪽에서 본 비신뢰 channel 설정은 `max_retransmits=None` 으로 보고됨 (보낸 쪽 설정은 `Some(0)`). 동작은 비신뢰였으나 설정 보고가 다름 |
+| 5. 대역폭 추정 | **실패** | 병목 1 Mbps: 추정이 1.52 → 0.22 Mbps 로 계속 하락. 5 Mbps 로 풀어도 0.19 → 0.12 Mbps 로 계속 하락 (`phase 2 estimate increases` assertion 실패) |
+
+- 5번 실패의 원인 확인 (harness 인지 라이브러리인지)
+  - 중계 task 의 병목 흉내가 받은 양을 그대로 내보낸다: 진단 실행에서 2초 이후 들어온 양과 내보낸 양이 같고(예: 0.41/0.41 Mbps) 버림 0. 패킷은 answerer socket 까지 간다.
+  - 병목 없는 대조 실행: 보낸 2.59 Mbps 중 2.51 Mbps 가 받는 앱에 도착하고 추정이 초당 약 8% 오른다. 받는 경로와 GCC 는 손실이 없으면 동작한다.
+  - 병목 실행: 첫 1초에 병목을 넘는 양(2.37 Mbps)을 보내 126개가 버려진 뒤부터, answerer socket 에 도착한 RTP 의 일부만(초 단위로 0~50%, 몇 초마다 몰아서) 받는 앱에 전달되고 추정이 계속 내려간다.
+  - 결론: 손실이 한 번 생긴 뒤 webrtc-rs 받는 쪽 경로 또는 GCC 가 회복하지 못한다. 기본 interceptor 에 jitter buffer 는 없다 (`register_default_interceptors`: NACK, simulcast header, TWCC receiver, RTCP report). 라이브러리 안의 정확한 원인은 찾지 않았다. 선택 결과(T7)가 이미 갈려 더 파는 비용(시간)이 결정에 영향을 주지 않기 때문이다.
+- 판정: **4/5 통과, 대역폭 추정 실패**.
+- 소스 확인 결과와 합친 우회 필요 사항: local 후보 추가 API 없음(SDP 문자열 편집), PLI 수신에 interceptor 필요, GCC 기본 꺼짐과 추정값 꺼내는 API 없음, SPS/PPS 크기 확인 필요, mDNS 5353 bind 실패가 연결 실패가 됨.
+
 ## T6 WebRTC: Windows 빌드와 IPv6
 ## T7 WebRTC 라이브러리 결정
 ## T8 Cloudflare Workers 로컬 테스트
