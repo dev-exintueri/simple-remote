@@ -105,6 +105,31 @@ jobs:
         working-directory: spikes/egui-probe
         run: cargo build --release
 
+      # Task 13
+      - name: wix build, install, check, uninstall
+        working-directory: spikes/wix
+        run: |
+          dotnet tool install --global wix --version 7.0.0
+          $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe"
+          & $wix --version
+          & $wix extension add -g WixToolset.Util.wixext/7.0.0 -acceptEula wix7
+          & $wix extension add -g WixToolset.Firewall.wixext/7.0.0 -acceptEula wix7
+          cargo build --release --manifest-path service\Cargo.toml
+          Copy-Item service\target\release\spike-service.exe .
+          & $wix build Spike.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.Firewall.wixext -acceptEula wix7 -o SimpleRemoteSpike.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\check.ps1 -Msi (Resolve-Path .\SimpleRemoteSpike.msi).Path -PsExec $env:PSEXEC
+
+      # Task 13
+      - name: upload wix logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wix-logs
+          path: spikes/wix/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
       # Task 1 (Task 6, 12 add their exe paths below)
       - name: upload exes
         if: always()

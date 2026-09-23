@@ -1,0 +1,9 @@
+[package]
+name = "spike-service"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "=0.8.1"
