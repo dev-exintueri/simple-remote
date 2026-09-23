@@ -100,6 +100,11 @@ jobs:
           Write-Output "RESULT dpapi-admin-decrypt ok=$($adminOk.ToString().ToLower())"
           if (-not ($sysOk -and $adminOk)) { exit 1 }
 
+      # Task 12
+      - name: build egui-probe
+        working-directory: spikes/egui-probe
+        run: cargo build --release
+
       # Task 1 (Task 6, 12 add their exe paths below)
       - name: upload exes
         if: always()
@@ -109,5 +114,6 @@ jobs:
           path: |
             spikes/win-probes/target/release/*.exe
             spikes/ipv6-pair/target/release/ipv6-pair.exe
+            spikes/egui-probe/target/release/egui_probe.exe
           if-no-files-found: warn
           retention-days: 14
