@@ -10,9 +10,19 @@
 
     <MediaTemplate EmbedCab="yes" />
 
-    <!-- RemoveFolderEx needs a property that resolves before CostInitialize; Directory ids cannot be used.
-         %ProgramData% is expanded by the custom action (RemoveFolderEx.xsd, Property attribute). -->
-    <Property Id="SPIKEDATADIR" Value="%ProgramData%\SimpleRemoteSpike" />
+    <!-- util:RemoveFolderEx cannot delete the SYSTEM-only data folder: it runs as an immediate custom
+         action in the installing user's context and fails to list the folder (0x80070005, seen in the
+         uninstall log). A deferred, non-impersonated (LocalSystem) custom action removes it instead.
+         Skipped on major upgrade so data survives upgrades (spec 7.1). -->
+    <CustomAction Id="RemoveSpikeData"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="&quot;[System64Folder]cmd.exe&quot; /c rmdir /s /q &quot;[CommonAppDataFolder]SimpleRemoteSpike&quot;"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="RemoveSpikeData" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="SimpleRemoteSpike">
@@ -56,7 +66,6 @@
             <!-- Protected DACL (P), inheritable (OICI) Full Access (FA) for LocalSystem (SY) only. -->
             <PermissionEx Sddl="D:P(A;OICI;FA;;;SY)" />
           </CreateFolder>
-          <util:RemoveFolderEx Property="SPIKEDATADIR" On="uninstall" />
         </Component>
       </Directory>
     </StandardDirectory>

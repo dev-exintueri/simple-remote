@@ -79,10 +79,8 @@ Check 'trace-programdata-gone' $dataGone
 if (-not $dataGone) {
     Write-Output '--- left in ProgramData (as SYSTEM) ---'
     Invoke-AsSystem "dir /s /a $data" | Write-Output
-    Write-Output '--- uninstall.log lines about RemoveFolderEx / SPIKEDATADIR ---'
-    Select-String -Path uninstall.log -Pattern 'RemoveFolder|SPIKEDATADIR|WixRemoveFoldersEx|RemoveFiles' | ForEach-Object { $_.Line } | Write-Output
-    Write-Output '--- install.log lines about SPIKEDATADIR ---'
-    Select-String -Path install.log -Pattern 'SPIKEDATADIR' | Select-Object -First 5 | ForEach-Object { $_.Line } | Write-Output
+    Write-Output '--- uninstall.log lines about RemoveSpikeData ---'
+    Select-String -Path uninstall.log -Pattern 'RemoveSpikeData|CustomAction' | ForEach-Object { $_.Line } | Write-Output
 }
 Check 'trace-firewall-gone' ($null -eq (Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -eq 'SimpleRemote Spike' }))
 
