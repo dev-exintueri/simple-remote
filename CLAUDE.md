@@ -6,8 +6,10 @@
 
 | 문서 | 내용 |
 |---|---|
-| `docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md` | 현재 진행 상태, 다음 할 일, 결정 기록 D1~D20. 맨 앞의 "클라우드 세션 인계" 절부터 읽는다 |
+| `docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md` | 현재 진행 상태, 다음 할 일, 결정 기록 D1~D24. 맨 앞의 "로컬 Windows 세션 인계" 절부터 읽는다 |
 | `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md` | 승인된 SP1 설계 spec. 구현의 기준 |
+| `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` | SP1 Phase 0 (spike) 계획. 실행 중 |
+| `docs/research/2026-09-23-sp1-phase0-spike-results.md` | Phase 0 spike 결과 (task 별) |
 | `docs/research/` | spec 의 근거 조사 3건 (TeamViewer 기능, P2P·보안, Windows/macOS host 플랫폼) |
 
 - 진행 기록은 단계가 끝날 때마다 갱신한다: 어디까지 했는지, 다음에 무엇을 할지, 어떤 결정을 왜 내렸는지. 다음 세션이 이 파일만 읽고 이어받을 수 있어야 한다.

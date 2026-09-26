@@ -2,18 +2,44 @@
 
 이 파일만 읽고 다음 세션이 이어받을 수 있도록 단계가 끝날 때마다 갱신한다.
 
-## 클라우드 세션 인계 (다음 세션이 가장 먼저 읽을 것)
+## 로컬 Windows 세션 인계 (다음 세션이 가장 먼저 읽을 것)
 
 ### 현재 상태
 
-- 설계(brainstorming)는 끝났고 SP1 spec 이 사용자 승인을 받았다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
-- 클라우드 세션에서 superpowers plugin 없이 진행한다 (D21).
-- **SP1 Phase 0 계획 승인, 실행 중**: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` (작업 브랜치 `claude/sweet-euler-2jtbfa`). 결과는 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 에 task 별로 쌓는다.
-  - 끝남: Task 0~9, 13 (T2 PAKE, T3 Noise KK, T4 str0m, T5 webrtc-rs, T6 Windows 빌드·`::1`, T7 str0m 승인 D23, T8 Workers, T9 SYSTEM DPAPI, T13 WiX). Task 12 의 exe 빌드도 끝남.
-  - 사람 PC 용 exe: Actions run 35899681949 의 artifact `win-spikes` (dpapi_probe, sendinput_probe, mf_probe, ipv6-pair, egui_probe). 이후 빌드는 영역별 workflow 의 artifact (`win-probes`, `win-webrtc`, `win-egui`).
-  - 사람 대기: Task 10, 11, 12 측정과 T6 의 전역 IPv6 확인은 H1(어느 PC)·H2(PC 정보) 답이 필요하다.
-  - 남은 것: Task 14 (종합, spec 반영 승인).
-- 클라우드 세션에는 이전 대화 맥락, 사용자 전역 설정, 로컬 plugin 이 넘어가지 않는다. 사용자 작업 규칙은 저장소 루트 `CLAUDE.md` 에 옮겨 두었다.
+- 설계는 끝났고 SP1 spec 이 승인됐다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
+- SP1 Phase 0 계획 승인, 실행 중: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md`. 결과는 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 의 task 별 절에 쌓는다.
+- 클라우드 세션에서 Task 0~9, 13 을 끝내고 `develop` 에 머지했다 (dev-exintueri/simple-remote PR #1, merge commit `d1a566f`).
+  - 통과: T1 Actions, T2 PAKE, T3 Noise KK, T4 str0m 5/5, T6 Windows 빌드·`::1`, T8 Workers, T9 SYSTEM DPAPI, T13 WiX 14/14. T5 webrtc-rs 4/5.
+  - 결정: D21~D24 (이 파일 "결정 기록"). WebRTC 는 str0m (D23).
+- 로컬 Windows 세션으로 옮긴 이유: 남은 spike 는 실제 Windows 화면·입력·GPU 가 필요하다.
+
+### 로컬 세션이 할 일 (순서대로)
+
+1. **사람 확인 먼저 (H1)**: 이 PC 에서 돌려도 되는지 사용자에게 묻는다. 예전 기록상 개발 PC 는 회사 관리 PC(Windows 11 Enterprise)로 보였다. Task 10 은 마우스를 몇 초간 움직이고, Task 11 은 PsExec 로 SYSTEM 권한 프로그램을 띄운다 (회사 보안 도구가 막거나 경고를 낼 수 있음). 답을 받기 전에는 exe 를 실행하지 않는다.
+2. **PC 정보 수집 (H2)**: 에이전트가 직접 조회하고 사용자에게 확인받는다.
+   - Windows 버전: `Get-ComputerInfo -Property OsName,OsVersion,OsBuildNumber`
+   - GPU: `Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion`
+   - 모니터 수와 배율: 배율은 설정 → 디스플레이에서 사용자가 알려 준다 (예전 기록: Intel Arc + RTX 4070 Laptop 두 GPU 노트북. hybrid GPU 는 Task 11 인코더 목록과 이후 DDA 에 영향).
+3. **exe 준비**: Actions artifact 를 받는다 (빌드 도구 설치 불필요, D22).
+   - `gh run download 35899681949 --repo dev-exintueri/simple-remote --name win-spikes --dir C:\spike` (dpapi_probe, sendinput_probe, mf_probe, ipv6-pair, egui_probe). artifact 보관 기한은 2026-10-07 전후. 지났으면 해당 영역 workflow 를 다시 돌려 (`windows-probes`, `windows-webrtc`, `windows-egui` 의 workflow_dispatch) 새 artifact 를 받는다.
+   - PsExec: https://download.sysinternals.com/files/PSTools.zip 을 풀어 `PsExec64.exe` 를 `C:\spike\` 에.
+   - `Get-ChildItem C:\spike -Recurse | Unblock-File`
+4. **Task 10 (SendInput)**: 에이전트가 `C:\spike\sendinput_probe.exe > C:\spike\sendinput.csv` 를 직접 실행해도 된다 (관리자 권한 불필요). 실행 중 사용자가 마우스를 건드리지 않게 먼저 알린다. stderr 요약 줄과 CSV 로 판정.
+5. **Task 11 (MF 인코더, SYSTEM)**: 내 계정 실행 (`mf_probe.exe`, `mf_probe.exe --software`) 은 에이전트가 한다. SYSTEM 실행은 관리자 PowerShell 이 필요하므로 사용자에게 명령을 주고 결과를 받는다. PsExec 는 SYSTEM 프로그램의 stdout 을 잃을 수 있다 (Actions 에서 확인, T9). 처음부터 파일로 받는다:
+   - `query session` 으로 Active 세션 ID 확인
+   - `C:\spike\PsExec64.exe -accepteula -s -i <세션> cmd /c "C:\spike\mf_probe.exe > C:\spike\mf-system.txt 2>&1"` 와 `--software` 판 (`mf-system-sw.txt`)
+6. **Task 12 (egui)**: `egui_probe.exe` 를 띄우는 것은 에이전트가 해도 되지만, 30초 측정값 읽기, 한글 입력(`원격 지원 테스트 한글 입력 확인`, 조합 중 백스페이스), 창을 다른 모니터로 옮기기는 사용자가 한다. 계획 Task 12 의 3단계 순서를 안내한다.
+7. **T6 전역 IPv6**: `ipconfig` 에 2·3 으로 시작하는 IPv6 주소가 있으면 `C:\spike\ipv6-pair.exe <주소>` 를 에이전트가 실행. 없으면 "IPv6 없음"으로 기록.
+8. 각 결과를 결과 문서 `## T10`, `## T11`, `## T12`, `## T6` 에 계획의 기준으로 판정해 적는다.
+9. **Task 14**: 결과 문서 `## 종합` 에 판정 표와 spec 반영 변경 목록을 쓰고 사용자 승인을 받는다. 후보: PAKE 는 `pakery-spake2` P-256 (spec 5.2, 5.7), 재접속용 X25519 정적 key (spec 4절), UPnP 후보는 같은 socket 의 host 후보와 함께 (spec 5.4), `SendInput` 좌표 공식 (spec 6.3, T10 결과), 데이터 삭제·정책 값 복원은 LocalSystem deferred custom action (spec 7.1), 흔적 검사는 SYSTEM 으로 읽기 (spec 7.3). 승인된 것만 spec 과 이 파일 결정 기록에 함께 반영한다.
+10. 이 절과 "다음 할 일"을 갱신하고, 작업 브랜치 → PR → `develop` 으로 반영한다 (CLAUDE.md git 규칙).
+
+### 로컬 세션 주의 사항
+
+- 작업 브랜치는 최신 `develop` 에서 새로 만든다 (`git fetch origin && git switch -c <새 브랜치> origin/develop`).
+- `spikes/` 아래 파일을 바꿔 push 하면 해당 Windows workflow 가 돈다 (D24, private 저장소 Free plan 한 달 약 1,000 Windows 분 중 지금까지 약 150분 사용). 문서만 바꾸면 돌지 않는다.
+- Windows 에서 직접 빌드하려면 MSVC Build Tools 가 필요하다 (예전 기록: 이 PC 에서 MSVC linker 를 찾지 못함). Phase 0 의 남은 일에는 빌드가 필요 없다.
+- superpowers plugin 이 이 로컬 환경에 있으면 CLAUDE.md 대로 그 skill 을 쓴다. 산출물 위치는 같다.
 
 ### Phase 0 계획을 쓰며 확인한 사실 (spec 과 다른 것 포함)
 
@@ -26,44 +52,11 @@
 - WiX 7.0.0 은 OSMF EULA 수락이 있어야 빌드한다 (개인 비영리는 요금 면제). 레지스트리 값 "원래 값 복원"은 WiX 선언으로 안 되고 custom action 이 필요하다.
 - 이 클라우드 컨테이너는 proxy 가 docs.rs, learn.microsoft.com, Microsoft 다운로드를 막는다. API 는 crates.io 에서 받은 crate 소스로 확인했고, Windows exe 링크는 불가하다 (→ D22).
 
-### 다음 할 일: SP1 Phase 0 계획 (spike)
-
-계획 분할 방침: spike 결과가 WebRTC 라이브러리, UI 라이브러리, PAKE 라이브러리를 정한다. 그 전에 전송·UI 코드까지 상세 계획을 쓰면 확인하지 않은 API 를 추측하게 되므로, SP1 을 순차 계획 여러 개로 나눈다. 먼저 Phase 0(spec 11절 spike) 계획을 상세히 쓰고, 이후 계획은 spike 결과가 나온 뒤 하나씩 쓴다. 계획 파일 위치는 `docs/superpowers/plans/`.
-
-spec 11절 spike 를 실행 위치로 나누면 다음과 같다.
-
-| spike | 실행 위치 | 이유 |
-|---|---|---|
-| WebRTC 라이브러리 (`str0m` / `webrtc-rs`): 외부 후보 추가, ICE restart, H.264 RTP, data channel, 대역폭 추정 | 클라우드(Linux) | loopback 과 network namespace 로 확인 가능. Windows IPv6 후보 동작만 Windows 필요 |
-| PAKE (`spake2` / `opaque-ke`, RFC 9382 테스트 값) | 클라우드 | 순수 Rust |
-| 재접속 key 합의 (Noise KK crate) | 클라우드 | 순수 Rust |
-| Cloudflare Workers 로컬 테스트 도구 (Durable Object, WebSocket) | 클라우드 | Node 로컬 실행, Cloudflare 계정 불필요 |
-| WiX Toolset 버전·이용 조건 | 클라우드(문서 조사) + Windows(MSI 빌드) | |
-| egui: 영상 텍스처 갱신 지연, 한글 IME, Per-Monitor v2 DPI | Windows (사람 실행) | IME, DPI 는 Windows 에서만 의미 있음 |
-| SYSTEM 계정 DPAPI | Windows (사람 실행) | |
-| MF 하드웨어 인코더를 SYSTEM agent 에서 생성, D3D11 texture 입력 | Windows (사람 실행, GPU 필요) | |
-| `SendInput` 절대 좌표 반올림 되읽기 | Windows (사람 실행) | |
-
-Windows spike 는 클라우드 세션이 검사 코드와 실행·결과 보고 방법을 준비하고, 사람이 Windows PC 에서 실행해 결과를 돌려준다.
-
-### 보류 중인 사람 판단
-
-- Windows spike 를 어느 PC 에서 돌릴지. 개발에 쓰던 PC 는 회사 관리 PC(Windows 11 Enterprise)로 보여서, SYSTEM 서비스 설치나 입력 주입 테스트는 개인 Windows PC 에서 하는 것을 권했다. 사용자는 아직 답하지 않았다.
-
 ### 환경 메모
 
-- 개발에 쓰던 로컬 WSL 의 Rust 는 1.88 이라 업데이트가 필요했다. 클라우드 세션에서는 `rustc --version` 으로 버전을 먼저 확인하고, 필요하면 `rustup update stable` 을 쓴다.
+- 예전 로컬 WSL 의 Rust 는 1.88 이었다. spike 는 Rust 1.95 이상이 필요하다 (`spikes/rust-toolchain.toml`). 빌드할 일이 생기면 `rustc --version` 부터 확인한다.
 - Windows 빌드는 GitHub Actions `windows-2025` 로 한다 (D22). 사람 PC 에는 빌드 도구가 필요 없다.
 - Actions 의 pwsh step 은 마지막 외부 프로그램의 종료 코드로 끝난다. 기대된 실패를 확인하는 명령 뒤에는 `exit 0` 을 명시한다. PsExec 는 SYSTEM 으로 실행한 프로그램의 stdout 을 잃을 수 있어 파일로 받는다.
-
-### 클라우드 세션 첫 메시지 (사용자가 붙여 넣을 문장)
-
-```
-CLAUDE.md 와 docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md 의 "클라우드 세션 인계" 절을 먼저 읽어 줘.
-승인된 spec(docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md) 기준으로 SP1 Phase 0(spec 11절 spike) 구현 계획을 작성해 줘.
-superpowers plugin 이 있으면 writing-plans skill 을 쓰고, 계획을 쓰기 전에 필요한 라이브러리 API 는 문서나 소스로 확인해 줘.
-계획이 끝나면 나에게 검토를 요청하고, 승인 전에는 구현을 시작하지 마.
-```
 
 ## 요청 요약 (사용자 원문 기준)
 
@@ -266,6 +259,11 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 - D24. workflow 경로 조건을 Windows 관련 spike 폴더로 좁힘 (사용자 요청). `spikes/signaling`, `spikes/auth` 처럼 Windows 와 무관한 변경은 Windows 빌드를 돌리지 않는다.
 
 ## 다음 할 일
+
+- 맨 앞 "로컬 Windows 세션 인계" 절의 "로컬 세션이 할 일" 1~10 을 순서대로 한다 (Phase 0 Task 10, 11, 12, T6 전역 IPv6, Task 14).
+- Phase 0 가 끝나면 spike 결과를 입력으로 다음 계획을 쓴다. 계획 분할 방침(순차 계획 여러 개)은 유지한다. 어느 부분 계획을 먼저 쓸지는 Task 14 에서 사용자와 정한다.
+
+### 지난 기록 (계획 작성 전 로컬 세션)
 
 - spec 승인 완료. 이 진행 기록도 commit 하고 `develop` 을 `https://github.com/dev-exintueri/simple-remote.git`(private, 빈 저장소) 에 push 한다 (사용자 지시). push 는 전역 git 설정을 바꾸지 않고 gh credential helper 를 1회성으로 사용.
 - push 후 superpowers:writing-plans 로 SP1 구현 계획을 작성한다.
