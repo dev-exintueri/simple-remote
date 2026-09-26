@@ -1,0 +1,37 @@
+# Product Windows check (not a spike): builds and tests the platform-win crate (DPAPI)
+# and confirms the whole workspace still builds on Windows.
+# Runs only when platform-win or this workflow file changes (D24: path filter keeps the
+# Windows minutes down since only Windows-specific code needs a Windows runner).
+name: windows-platform
+
+on:
+  push:
+    paths:
+      - 'crates/platform-win/**'
+      - '.github/workflows/windows-platform.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-2025:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: test platform-win
+        run: cargo test -p platform-win
+
+      - name: build workspace
+        run: cargo build --workspace --all-features

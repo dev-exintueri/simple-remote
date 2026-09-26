@@ -1,0 +1,8 @@
+[package]
+name = "platform-win"
+version = "0.1.0"
+edition.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+auth = { workspace = true }
