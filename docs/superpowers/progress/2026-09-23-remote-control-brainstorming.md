@@ -292,6 +292,10 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 
 ## 다음 할 일
 
+- "연결 뼈대" 는 PR #4 로 `develop` 에 머지됐다. 사용자가 "다음 계획 진행" 을 요청해 재접속 계획을 작성했다: `docs/superpowers/plans/2026-09-26-sp1-reconnect-and-storage.md` (작업 브랜치 `sp1-reconnect-plan`). 사용자 검토와 실행 방식 선택을 기다린다.
+  - 사용자 결정 (저장 범위): 저장소는 폴더를 받는 형태로 만들고, 이번 계획에서는 host 도 사용자 계정 DPAPI 로 사용자 폴더에 저장한다. 서비스 계획에서 host 를 SYSTEM 으로 돌리며 폴더만 `ProgramData` 로 바꾼다 (DPAPI 호출은 같음, SYSTEM 으로 실행하면 SYSTEM 계정 범위가 됨).
+  - 계획에서 정한 것: signaling 이 viewer 번호를 매겨 늦은 kick·relay 를 버림 (Kick 경쟁 해소), viewer 는 접속 종류(`new`/`reconnect`), host 는 모드를 밝히고 서버가 맞지 않는 접속을 거절, 허가증 번호는 Noise KK 첫 메시지의 암호화 payload 에만 실음 (host 는 대기 중 허가증의 viewer 재접속 key 로 차례로 시도), 평문 저장은 feature `insecure-dev-store` 개발 빌드(Linux e2e)에서만.
+
 - "연결 뼈대" 계획 구현이 끝났다 (Task 1~10, 로컬 e2e `E2E OK`). 사람 할 일: `sp1-connection-plan` 브랜치의 PR 검토와 `develop` 반영 결정.
 - 다음 계획 후보 (에이전트 추천 순서):
   1. 재접속 허가증 + Noise KK (D26) + 기기 key·ID 저장 (Windows 는 DPAPI). 지금은 실행할 때마다 기기 key 와 ID 를 새로 만들어, 같은 host 에 다시 붙으려면 매번 코드가 필요하다. spec 4절, 5.3 과 5.2 6단계의 "이전에 연결한 기기" 표시가 여기에 걸린다.
