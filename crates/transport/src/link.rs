@@ -34,7 +34,9 @@ pub enum LinkError {
 /// `127.0.0.1`, `::1`, `localhost` 일 때만 허용한다 (그 밖은 [`LinkError::InsecureUrl`]).
 pub struct WsLink<In, Out> {
     ws: WebSocket<MaybeTlsStream<TcpStream>>,
-    closed: bool,
+    /// `None` 이면 아직 안 닫힘. `Some(code)` 면 이미 닫혔고, 이후 모든 호출이 같은
+    /// `code` 로 `Closed` 를 돌려준다.
+    closed: Option<Option<u16>>,
     _in: PhantomData<In>,
     _out: PhantomData<Out>,
 }
@@ -45,7 +47,7 @@ impl<In, Out> WsLink<In, Out> {
         install_rustls_provider();
 
         let (ws, _response) = tungstenite::connect(url).map_err(map_tungstenite_err)?;
-        Ok(WsLink { ws, closed: false, _in: PhantomData, _out: PhantomData })
+        Ok(WsLink { ws, closed: None, _in: PhantomData, _out: PhantomData })
     }
 
     fn set_read_timeout(&self, dur: Option<Duration>) -> Result<(), LinkError> {
@@ -59,8 +61,8 @@ impl<In, Out> WsLink<In, Out> {
 
 impl<In: DeserializeOwned, Out: Serialize> Link<In, Out> for WsLink<In, Out> {
     fn send(&mut self, msg: &Out) -> Result<(), LinkError> {
-        if self.closed {
-            return Err(LinkError::Closed { code: None });
+        if let Some(code) = self.closed {
+            return Err(LinkError::Closed { code });
         }
         let text = serde_json::to_string(msg).map_err(|e| LinkError::Protocol(e.to_string()))?;
         match self.ws.send(Message::text(text)) {
@@ -70,8 +72,8 @@ impl<In: DeserializeOwned, Out: Serialize> Link<In, Out> for WsLink<In, Out> {
     }
 
     fn recv(&mut self, timeout: Duration) -> Result<Option<In>, LinkError> {
-        if self.closed {
-            return Err(LinkError::Closed { code: None });
+        if let Some(code) = self.closed {
+            return Err(LinkError::Closed { code });
         }
 
         let deadline = Instant::now() + timeout;
@@ -97,8 +99,9 @@ impl<In: DeserializeOwned, Out: Serialize> Link<In, Out> for WsLink<In, Out> {
                     continue;
                 }
                 Ok(Message::Close(frame)) => {
-                    self.closed = true;
-                    return Err(LinkError::Closed { code: frame.map(|f| u16::from(f.code)) });
+                    let code = frame.map(|f| u16::from(f.code));
+                    self.closed = Some(code);
+                    return Err(LinkError::Closed { code });
                 }
                 Ok(Message::Frame(_)) => {
                     return Err(LinkError::Protocol("raw frame from read()".into()));
@@ -121,7 +124,7 @@ impl<In, Out> WsLink<In, Out> {
     fn map_after_error(&mut self, e: tungstenite::Error) -> LinkError {
         match &e {
             tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
-                self.closed = true;
+                self.closed = Some(None);
                 LinkError::Closed { code: None }
             }
             tungstenite::Error::Io(io) => LinkError::Io(std::io::Error::new(io.kind(), io.to_string())),
@@ -152,28 +155,51 @@ fn install_rustls_provider() {
 }
 
 /// `wss://` 는 항상 허용. `ws://` 는 host 가 `127.0.0.1`, `::1`, `localhost` 일 때만 허용.
+/// 직접 문자열을 잘라 authority/host 를 뽑으면 `ws://localhost:1@evil.com/x` 처럼
+/// userinfo 뒤에 진짜 host 를 숨기는 URL 을 통과시킬 수 있으므로, `tungstenite::http::Uri`
+/// (tungstenite 가 `pub use http;` 로 재노출) 로 한 번만 파싱해서 판단한다. 파싱 실패는
+/// `InsecureUrl` 로 막는다(fail closed).
 fn ensure_secure_url(url: &str) -> Result<(), LinkError> {
-    if url.starts_with("wss://") {
+    let uri: tungstenite::http::Uri = url.parse().map_err(|_| LinkError::InsecureUrl)?;
+
+    let scheme = uri.scheme_str().unwrap_or("");
+    if scheme.eq_ignore_ascii_case("wss") {
         return Ok(());
     }
-    if let Some(rest) = url.strip_prefix("ws://") {
-        let authority = rest.split('/').next().unwrap_or("");
-        let host = host_of(authority);
-        if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-            return Ok(());
-        }
+    if !scheme.eq_ignore_ascii_case("ws") {
+        return Err(LinkError::InsecureUrl);
     }
-    Err(LinkError::InsecureUrl)
+
+    let authority = uri.authority().ok_or(LinkError::InsecureUrl)?;
+    // userinfo(`user:pass@host`)가 있으면 무조건 거부한다. `Authority::host()` 는 이미
+    // userinfo 뒤의 진짜 host 를 돌려주지만, 애초에 userinfo 가 있는 ws:// URL 을 받아줄
+    // 이유가 없으므로 검사를 명시적으로 둔다.
+    let raw_authority = authority.as_str();
+    if raw_authority.contains('@') {
+        return Err(LinkError::InsecureUrl);
+    }
+
+    // `Authority::host()` 는 `[::1]evil` 처럼 IP-literal 뒤에 쓰레기가 붙어도 첫 `]` 에서
+    // 잘라 host 만 돌려준다(예: `"[::1]"`). tungstenite 가 실제로 접속할 host 도 같은
+    // 함수로 뽑으므로 값 자체는 tungstenite 와 일치하지만, host 뒤에 `:port` 가 아닌
+    // 다른 글자가 남아있다면 URL 이 우리가 생각하는 것과 다른 모양이므로 거부한다.
+    let raw_host = authority.host();
+    match raw_authority.strip_prefix(raw_host) {
+        Some(rest) if rest.is_empty() || rest.starts_with(':') => {}
+        _ => return Err(LinkError::InsecureUrl),
+    }
+
+    // `Authority::host()` 는 IPv6 literal 이면 대괄호를 포함해서 돌려준다(`"[::1]"`).
+    let host = strip_ipv6_brackets(raw_host);
+    if host.eq_ignore_ascii_case("127.0.0.1") || host == "::1" || host.eq_ignore_ascii_case("localhost") {
+        Ok(())
+    } else {
+        Err(LinkError::InsecureUrl)
+    }
 }
 
-/// authority(`host:port` 또는 `[v6]:port`) 에서 host 부분만 뽑아낸다.
-fn host_of(authority: &str) -> &str {
-    if let Some(rest) = authority.strip_prefix('[') {
-        if let Some(end) = rest.find(']') {
-            return &rest[..end];
-        }
-    }
-    authority.split(':').next().unwrap_or(authority)
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
 
 #[cfg(test)]
@@ -197,5 +223,40 @@ mod tests {
     #[test]
     fn wss_is_always_secure() {
         assert!(ensure_secure_url("wss://example.com/x").is_ok());
+    }
+
+    #[test]
+    fn uppercase_scheme_is_still_checked_correctly() {
+        assert!(ensure_secure_url("WS://127.0.0.1:8787/x").is_ok());
+        assert!(ensure_secure_url("WSS://example.com/x").is_ok());
+    }
+
+    /// userinfo 뒤에 진짜 host 를 숨겨 loopback 검사를 피해가려는 URL 들.
+    /// `ws://localhost:8787@evil.com/x` 는 `localhost:8787` 이 userinfo 이고 진짜
+    /// host 는 `evil.com` 이다 — 문자열을 손으로 잘라 첫 `:` 앞만 보면 `localhost` 로
+    /// 착각해 통과시키는 버그가 났던 자리.
+    #[test]
+    fn userinfo_cannot_forge_a_loopback_host() {
+        for url in [
+            "ws://localhost:8787@evil.com/x",
+            "ws://127.0.0.1:1@evil.com/x",
+            "ws://localhost:1@evil.com/x",
+            "ws://127.0.0.1@evil.com/x",
+        ] {
+            assert!(
+                matches!(ensure_secure_url(url), Err(LinkError::InsecureUrl)),
+                "userinfo 로 host 를 숨긴 url 은 거부돼야 한다: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn lookalike_hosts_are_insecure() {
+        for url in ["ws://127.0.0.1.evil.com/x", "ws://[::1]evil/x"] {
+            assert!(
+                matches!(ensure_secure_url(url), Err(LinkError::InsecureUrl)),
+                "loopback 을 흉내낸 host 는 거부돼야 한다: {url}"
+            );
+        }
     }
 }
