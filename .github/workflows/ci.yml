@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'crates/**'
+      - 'apps/**'
+      - 'signaling/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'apps/**'
+      - 'signaling/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: test
+        run: cargo test --workspace --all-features
+
+  signaling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: install npm 11
+        run: npm install -g npm@11
+
+      - name: npm ci
+        if: hashFiles('signaling/package.json') != ''
+        working-directory: signaling
+        run: npm ci
+
+      - name: typecheck
+        if: hashFiles('signaling/package.json') != ''
+        working-directory: signaling
+        run: npm run typecheck
+
+      - name: test
+        if: hashFiles('signaling/package.json') != ''
+        working-directory: signaling
+        run: npm test
