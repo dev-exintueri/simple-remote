@@ -760,10 +760,13 @@ name = "host-agent"
 version = "0.1.0"
 dependencies = [
  "auth",
+ "ed25519-dalek",
  "hex",
  "protocol",
+ "serde_json",
  "thiserror",
  "transport",
+ "tungstenite",
  "viewer-core",
 ]
 

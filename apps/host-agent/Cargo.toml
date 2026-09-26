@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 [dev-dependencies]
 transport = { workspace = true, features = ["test-support"] }
 viewer-core = { workspace = true }
+tungstenite = { workspace = true }
+ed25519-dalek = { workspace = true }
+serde_json = { workspace = true }
