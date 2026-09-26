@@ -259,3 +259,43 @@ target_x,target_y,formula,nx,ny,got_x,got_y,dx,dy
   - 이용 조건: WiX 7 은 `-acceptEula wix7` 이 있어야 빌드한다. 개인 비영리는 OSMF 요금 면제.
 
 ## 종합
+
+### 판정 표
+
+| task | 질문 | 판정 | 한 줄 요약 |
+|---|---|---|---|
+| T1 | Actions Windows 빌드 | 통과 | `windows-2025` 에서 빌드·실행, job 약 1~13분 |
+| T2 | PAKE | 통과 | `pakery-spake2` 0.6.0 P-256 이 RFC 9382 vector 재현, key 확인 동작. `spake2` 0.4 는 RFC 아님 |
+| T3 | 재접속 key 합의 | 통과 | `snow` 0.10 Noise KK 동작. X25519 key 만 받음 |
+| T4 | str0m | 통과 5/5 | 외부 후보는 같은 socket 의 host 후보 필요 |
+| T5 | webrtc-rs | 4/5 | 손실 뒤 대역폭 추정 회복 못 함 |
+| T6 | Windows 빌드·IPv6 | 통과 | MSVC 빌드, `::1` 연결. 사람 PC 는 전역 IPv6 없음 (제외) |
+| T7 | WebRTC 라이브러리 | 결정 | `str0m` 0.23.1 (D23, spec 반영 끝) |
+| T8 | Workers 로컬 테스트 | 통과 | `@cloudflare/vitest-plugin`, npm 11 필요 |
+| T9 | SYSTEM DPAPI | 통과 | 관리자 계정도 API 로 못 풂 |
+| T10 | SendInput 좌표 | 공식 A·B 실패, 공식 C 부분 | 올림 공식 C 가 6000 지점 불일치 0. 모니터 1대 조건 |
+| T11 | MF 인코더 (SYSTEM) | 통과 | SYSTEM·사용자 세션에서 NVIDIA 하드웨어 MFT, D3D11 texture 30/30 |
+| T12 | egui | 통과 2 / 부분 1 | 성능·한글 IME 통과, DPI 는 배율 변경만 확인 |
+| T13 | WiX MSI | 통과 14/14 | 데이터 삭제는 LocalSystem deferred custom action 필요 |
+
+### 확인하지 못한 조건 (제품 단계 테스트로 넘김)
+
+- 다중 모니터(배율 혼합, 음수 origin)에서 SendInput 공식 C (T10) 와 egui 창 이동 DPI (T12). 사람 PC 가 모니터 1대라 불가.
+- Intel·AMD·hybrid GPU 의 SYSTEM 하드웨어 MFT (T11). 사람 PC 는 NVIDIA 하나.
+- 실제 전역 IPv6 UDP 연결 (T6). 사람 PC 회선에 IPv6 없음.
+
+### spec 반영 변경 목록 (승인 요청)
+
+승인된 항목만 spec 과 진행 기록 결정 기록(D25 부터)에 함께 반영한다.
+
+| 번호 | spec 위치 | 지금 | 바꿀 내용 | 근거 |
+|---|---|---|---|---|
+| S1 | 5.2 3단계, 5.7 둘째 줄 | "SPAKE2, RFC 9382 후보", "`spake2`(RustCrypto) 감사 없음, `opaque-ke` 와 비교" | PAKE 는 `pakery-spake2` `=0.6.0` + `pakery-crypto` P-256-SHA256 (RFC 9382 suite). `crates/auth` 에 격리하고 RFC 9382 vector 를 `crates/auth` 테스트에 둔다. 5.7 한계 문구를 "1인 프로젝트, 미감사, API 변경 잦음 → 버전 고정과 vector 테스트로 완화"로 바꾸고 `opaque-ke` 는 일회용 코드 구조에 맞지 않아 제외했다고 적는다 | T2 |
+| S2 | 4절 표, 5.3 재접속 2단계 | 기기 key 는 Ed25519 하나, "Noise KK 후보" | 4절 표에 "재접속 key: 기기마다 X25519 정적 key 쌍, 공개키는 Ed25519 기기 key 로 서명해 신원에 묶음, 보관·폐기는 기기 key 와 같음" 행 추가. 5.3 을 "`snow` Noise KK (`Noise_KK_25519_ChaChaPoly_BLAKE2s`)"로 확정하고, `snow` 에 넘기기 전 key 길이 32 byte 확인을 적는다 | T3 |
+| S3 | 5.4 후보 줄 | 후보 종류만 나열 | "공유기 매핑 주소는 SDP 에 srflx 후보로 알리고, local 에는 같은 socket 의 host 후보를 함께 둔다. 경로 기록은 str0m `PeerStats.selected_candidate_pair` 로 만든다" 추가 | T4 |
+| S4 | 6.3 셋째 줄 | "반올림 규칙은 문서에 없으므로 되읽어 확인하는 테스트를 둔다" | 변환 공식을 `nx = ((x - vx) * 65536 + vw - 1) / vw` (y 도 같은 형태, 올림)로 정한다. 공식 A·B 는 1픽셀 모자람이 생겨 쓰지 않는다. 되읽기 테스트는 다중 모니터 확인용으로 유지 | T10 |
+| S5 | 6.2 코덱 줄 | "하드웨어 MFT 우선, 없거나 실패하면 소프트웨어" | 그대로 두고 두 가지를 덧붙인다: 하드웨어 MFT 는 `MFT_ENUM_FLAG_HARDWARE` 로 따로 열거한다 (없으면 목록에 안 나옴), 스트림 끝·해상도 변경 때 `MFT_MESSAGE_COMMAND_DRAIN` 으로 남은 프레임을 꺼낸다. SYSTEM agent 에서 동작 확인(NVIDIA) 사실을 근거로 남긴다 | T11 |
+| S6 | 3.3 UI 줄 | "egui 후보, spike 로 확정" | "egui (eframe 0.36, wgpu)" 로 확정. 한글 글꼴은 시스템 `malgun.ttf` 를 fallback 으로 넣는다. 근거: 1080p30 갱신 cpu p95 약 7ms, 한글 IME 통과 | T12 |
+| S7 | 7.1 표 데이터·정책 행, 3.3 설치 줄 | 제거 시 "삭제", "원래 값 복원" | 데이터 폴더 삭제와 `SoftwareSASGeneration` 원래 값 복원은 LocalSystem deferred custom action(`Impersonate="no"`)으로 한다. 업그레이드 때(`UPGRADINGPRODUCTCODE`)는 데이터를 남긴다. 3.3 설치 줄에 "WiX 7.0.0, 빌드에 `-acceptEula wix7`, 개인 비영리는 OSMF 요금 면제" | T13 |
+| S8 | 7.3 첫 줄 | PowerShell 검사 스크립트 | 검사 스크립트는 SYSTEM 으로 실행한다 (관리자 계정은 SYSTEM 전용 폴더의 ACL 도 못 읽음) | T13 |
+| S9 | 11절 표 | 확인할 spike 목록 | 각 행에 "Phase 0 확인 끝, 결과 문서 T 번호" 를 붙이고, 위 "확인하지 못한 조건" 3가지를 남은 확인으로 적는다 | 전체 |
