@@ -112,6 +112,11 @@ export async function connect(path: string, ip: string): Promise<Peer> {
 	return new Peer(ws);
 }
 
+/** Tells an authed host to switch mode (no reply is expected). */
+export function setMode(peer: Peer, mode: "new" | "reconnect"): void {
+	peer.send({ t: "mode", mode });
+}
+
 /** Connects a host (new registration when `id` is omitted), signs the challenge and waits for `registered`. */
 export async function registerHost(key: Keypair, ip: string, id?: string): Promise<{ peer: Peer; id: string }> {
 	const path = id === undefined ? `/v1/host?key=${key.pub}` : `/v1/host/${id}?key=${key.pub}`;

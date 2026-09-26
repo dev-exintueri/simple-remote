@@ -55,13 +55,15 @@ export default {
 		if (ip === null || ip === "") return status(400, "missing client ip");
 
 		if (viewer !== null) {
+			const kind = url.searchParams.get("kind") ?? "";
+			if (kind !== "new" && kind !== "reconnect") return status(400, "bad kind");
 			const id = viewer[1];
 			const [ipOk, idOk] = await Promise.all([
 				hit(env, `viewer-ip:${ip}`, VIEWER_PER_IP),
 				hit(env, `viewer-id:${id}`, VIEWER_PER_ID),
 			]);
 			if (!ipOk || !idOk) return status(429, "too many requests");
-			return room(env, id).fetch(roomRequest("/viewer", { id }));
+			return room(env, id).fetch(roomRequest("/viewer", { id, kind }));
 		}
 
 		if (!(await hit(env, `host-ip:${ip}`, HOST_PER_IP))) return status(429, "too many requests");

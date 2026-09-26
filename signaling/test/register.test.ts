@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connect, freshIp, newKey, registerHost, request, sign } from "./helpers";
+import { connect, freshIp, newKey, registerHost, request, setMode, sign } from "./helpers";
 
 describe("host registration", () => {
 	it("assigns_nine_digit_id_and_binds_key", async () => {
@@ -103,9 +103,10 @@ describe("host registration", () => {
 		const second = await registerHost(key, freshIp(), first.id);
 		expect(await first.peer.closeCode()).toBe(4010);
 
-		const viewer = await connect(`/v1/viewer/${first.id}`, freshIp());
+		setMode(second.peer, "new");
+		const viewer = await connect(`/v1/viewer/${first.id}?kind=new`, freshIp());
 		expect(await viewer.next()).toEqual({ t: "joined" });
-		expect(await second.peer.next()).toEqual({ t: "viewer_joined" });
+		expect(await second.peer.next()).toEqual({ t: "viewer_joined", n: 1, kind: "new" });
 	});
 
 	it("unauthenticated_host_is_not_waiting", async () => {
@@ -115,7 +116,7 @@ describe("host registration", () => {
 		await first.peer.closeCode();
 		const pending = await connect(`/v1/host/${first.id}?key=${key.pub}`, freshIp());
 		expect((await pending.next()).t).toBe("challenge");
-		const res = await request(`/v1/viewer/${first.id}`, freshIp());
+		const res = await request(`/v1/viewer/${first.id}?kind=new`, freshIp());
 		expect(res.status).toBe(404);
 	});
 });

@@ -12,12 +12,14 @@ const CLOSE_AUTH = 4003;
 const CLOSE_REPLACED = 4010;
 const CLOSE_TOO_BIG = 4013;
 
-type HostAttachment = { authed: boolean; nonce: string; key: string; id: string };
-type ViewerAttachment = { closedByServer: boolean };
+type Mode = "new" | "reconnect";
+type Kind = "new" | "reconnect";
+type HostAttachment = { authed: boolean; nonce: string; key: string; id: string; mode: Mode };
+type ViewerAttachment = { closedByServer: boolean; n: number; kind: Kind };
 
 /**
  * One instance per 9-digit ID. The Worker calls it with an internal URL:
- * `/host?id=&key=[&claim=1]` or `/viewer?id=`.
+ * `/host?id=&key=[&claim=1]` or `/viewer?id=&kind=`.
  */
 export class HostRoom extends DurableObject<Env> {
 	fetch(request: Request): Response {
@@ -29,7 +31,7 @@ export class HostRoom extends DurableObject<Env> {
 		if (url.pathname === "/host") {
 			return this.acceptHost(id, url.searchParams.get("key") ?? "", url.searchParams.get("claim") === "1");
 		}
-		if (url.pathname === "/viewer") return this.acceptViewer();
+		if (url.pathname === "/viewer") return this.acceptViewer(url.searchParams.get("kind"));
 		return new Response("not found", { status: 404 });
 	}
 
@@ -42,23 +44,36 @@ export class HostRoom extends DurableObject<Env> {
 		const { 0: client, 1: server } = new WebSocketPair();
 		this.ctx.acceptWebSocket(server, ["host"]);
 		const nonce = toHex(crypto.getRandomValues(new Uint8Array(32)));
-		const attachment: HostAttachment = { authed: false, nonce, key, id };
+		const attachment: HostAttachment = { authed: false, nonce, key, id, mode: "reconnect" };
 		server.serializeAttachment(attachment);
 		server.send(JSON.stringify({ t: "challenge", nonce, id }));
 		return new Response(null, { status: 101, webSocket: client });
 	}
 
-	private acceptViewer(): Response {
+	private acceptViewer(kindParam: string | null): Response {
+		if (kindParam !== "new" && kindParam !== "reconnect") return new Response("not found", { status: 404 });
+		const kind: Kind = kindParam;
 		const host = this.authedHost();
 		if (host === undefined) return new Response("host offline", { status: 404 });
+		const mode = (host.deserializeAttachment() as HostAttachment).mode;
+		const allowed = kind === "new" ? mode === "new" : mode === "new" || mode === "reconnect";
+		if (!allowed) return new Response("host not accepting this kind", { status: 404 });
 		if (this.openViewer() !== undefined) return new Response("viewer already connected", { status: 409 });
 		const { 0: client, 1: server } = new WebSocketPair();
 		this.ctx.acceptWebSocket(server, ["viewer"]);
-		const attachment: ViewerAttachment = { closedByServer: false };
+		const n = this.nextViewerNumber();
+		const attachment: ViewerAttachment = { closedByServer: false, n, kind };
 		server.serializeAttachment(attachment);
 		server.send(JSON.stringify({ t: "joined" }));
-		host.send(JSON.stringify({ t: "viewer_joined" }));
+		host.send(JSON.stringify({ t: "viewer_joined", n, kind }));
 		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	/** 1-based, persisted counter of viewers ever accepted by this room. */
+	private nextViewerNumber(): number {
+		const n = this.ctx.storage.kv.get<number>("next_viewer") ?? 1;
+		this.ctx.storage.kv.put("next_viewer", n + 1);
+		return n;
 	}
 
 	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
@@ -74,7 +89,8 @@ export class HostRoom extends DurableObject<Env> {
 		// they never reach the host as traffic of the next viewer.
 		if (ws !== this.openViewer()) return;
 		if (msg.t === "relay" && typeof msg.data === "string") {
-			this.authedHost()?.send(JSON.stringify({ t: "relay", data: msg.data }));
+			const n = (ws.deserializeAttachment() as ViewerAttachment).n;
+			this.authedHost()?.send(JSON.stringify({ t: "relay", n, data: msg.data }));
 			return;
 		}
 		this.closeFromServer(ws, CLOSE_PROTOCOL, "bad message");
@@ -86,12 +102,20 @@ export class HostRoom extends DurableObject<Env> {
 			if (msg.t !== "auth" || typeof msg.sig !== "string") return this.closeFromServer(ws, CLOSE_AUTH, "auth required");
 			return this.authenticate(ws, att, msg.sig);
 		}
-		if (msg.t === "relay" && typeof msg.data === "string") {
-			this.openViewer()?.send(JSON.stringify({ t: "relay", data: msg.data }));
+		if (msg.t === "mode") {
+			if (msg.mode !== "new" && msg.mode !== "reconnect") return this.closeFromServer(ws, CLOSE_PROTOCOL, "bad mode");
+			ws.serializeAttachment({ ...att, mode: msg.mode } satisfies HostAttachment);
+			return;
+		}
+		if (msg.t === "relay") {
+			if (!isViewerNumber(msg.n)) return this.closeFromServer(ws, CLOSE_PROTOCOL, "bad message");
+			if (typeof msg.data !== "string") return this.closeFromServer(ws, CLOSE_PROTOCOL, "bad message");
+			this.openViewerWithNumber(msg.n)?.send(JSON.stringify({ t: "relay", data: msg.data }));
 			return;
 		}
 		if (msg.t === "kick") {
-			const viewer = this.openViewer();
+			if (!isViewerNumber(msg.n)) return this.closeFromServer(ws, CLOSE_PROTOCOL, "bad message");
+			const viewer = this.openViewerWithNumber(msg.n);
 			if (viewer !== undefined) this.closeFromServer(viewer, CLOSE_KICKED, "kicked");
 			return;
 		}
@@ -145,9 +169,9 @@ export class HostRoom extends DurableObject<Env> {
 			return;
 		}
 		const att = ws.deserializeAttachment() as ViewerAttachment | null;
-		if (att?.closedByServer) return;
+		if (att === null || att.closedByServer) return;
 		const host = this.authedHost();
-		host?.send(JSON.stringify({ t: "viewer_left" }));
+		host?.send(JSON.stringify({ t: "viewer_left", n: att.n }));
 	}
 
 	/** Marks the host as no longer waiting and ends the viewer session. */
@@ -162,7 +186,8 @@ export class HostRoom extends DurableObject<Env> {
 
 	private closeFromServer(ws: WebSocket, code: number, reason: string): void {
 		if (this.ctx.getTags(ws).includes("viewer")) {
-			ws.serializeAttachment({ closedByServer: true } satisfies ViewerAttachment);
+			const att = ws.deserializeAttachment() as ViewerAttachment;
+			ws.serializeAttachment({ ...att, closedByServer: true } satisfies ViewerAttachment);
 		}
 		ws.close(code, reason);
 	}
@@ -176,6 +201,17 @@ export class HostRoom extends DurableObject<Env> {
 	private openViewer(): WebSocket | undefined {
 		return this.ctx.getWebSockets("viewer").find((ws) => ws.readyState === WebSocket.OPEN);
 	}
+
+	/** The open viewer, but only if its number matches `n` (a stale reference is dropped). */
+	private openViewerWithNumber(n: number): WebSocket | undefined {
+		const viewer = this.openViewer();
+		if (viewer === undefined) return undefined;
+		return (viewer.deserializeAttachment() as ViewerAttachment).n === n ? viewer : undefined;
+	}
+}
+
+function isViewerNumber(n: unknown): n is number {
+	return typeof n === "number" && Number.isSafeInteger(n) && n >= 1;
 }
 
 function parse(message: string | ArrayBuffer): { t: unknown; [k: string]: unknown } | null {
