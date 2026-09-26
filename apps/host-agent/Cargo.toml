@@ -1,0 +1,12 @@
+[package]
+name = "host-agent"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+name = "host_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "host-agent"
+path = "src/main.rs"
