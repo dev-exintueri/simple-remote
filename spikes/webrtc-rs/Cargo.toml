@@ -1,0 +1,18 @@
+[package]
+name = "spike-webrtc-rs"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+webrtc = "=0.21.0"
+# `rtc` is the sans-I/O core that `webrtc` wraps. Several types the async API takes
+# (RTCOfferOptions, MulticastDnsMode, MediaStreamTrack, codec structs, interceptors,
+# rtp/rtcp packets) are only reachable through it, so it is pinned to the same version.
+rtc = "=0.21.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+async-trait = "0.1"
+bytes = "1"

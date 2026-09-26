@@ -1,0 +1,61 @@
+# Spike only (throwaway): WiX MSI build, install, check, uninstall (Task 13)
+# Plan: docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md
+# Runs only when its own spike folders change (decision D24). Edits to this workflow file alone
+# do not trigger it; use workflow_dispatch or touch a file in the listed folders.
+name: windows-wix
+
+on:
+  push:
+    paths:
+      - 'spikes/wix/**'
+      - 'spikes/rust-toolchain.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        working-directory: spikes
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: fetch PsExec
+        run: |
+          Invoke-WebRequest -Uri https://download.sysinternals.com/files/PSTools.zip -OutFile $env:RUNNER_TEMP\PSTools.zip
+          Expand-Archive $env:RUNNER_TEMP\PSTools.zip -DestinationPath $env:RUNNER_TEMP\pstools
+          "PSEXEC=$env:RUNNER_TEMP\pstools\PsExec64.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: wix build, install, check, uninstall
+        working-directory: spikes/wix
+        run: |
+          dotnet tool install --global wix --version 7.0.0
+          $wix = "$env:USERPROFILE\.dotnet\tools\wix.exe"
+          & $wix --version
+          & $wix extension add -g WixToolset.Util.wixext/7.0.0 -acceptEula wix7
+          & $wix extension add -g WixToolset.Firewall.wixext/7.0.0 -acceptEula wix7
+          cargo build --release --manifest-path service\Cargo.toml
+          Copy-Item service\target\release\spike-service.exe .
+          & $wix build Spike.wxs -arch x64 -ext WixToolset.Util.wixext -ext WixToolset.Firewall.wixext -acceptEula wix7 -o SimpleRemoteSpike.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\check.ps1 -Msi (Resolve-Path .\SimpleRemoteSpike.msi).Path -PsExec $env:PSEXEC
+
+      - name: upload wix logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wix-logs
+          path: spikes/wix/*.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,60 @@
+# Spike only (throwaway): WebRTC spikes on Windows and ::1 connectivity (Task 6)
+# Plan: docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md
+# Runs only when its own spike folders change (decision D24). Edits to this workflow file alone
+# do not trigger it; use workflow_dispatch or touch a file in the listed folders.
+name: windows-webrtc
+
+on:
+  push:
+    paths:
+      - 'spikes/webrtc-str0m/**'
+      - 'spikes/webrtc-rs/**'
+      - 'spikes/ipv6-pair/**'
+      - 'spikes/rust-toolchain.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-2025
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: toolchain
+        working-directory: spikes
+        run: |
+          rustup toolchain install 1.95 --profile minimal
+          rustup show active-toolchain
+          rustc --version
+          cargo --version
+
+      - name: webrtc str0m tests
+        working-directory: spikes/webrtc-str0m
+        run: cargo test -- --nocapture --test-threads=1
+
+      # Task 6 (bwe is a known failure on Linux, see results T5; do not stop the job)
+      - name: webrtc-rs tests
+        continue-on-error: true
+        working-directory: spikes/webrtc-rs
+        run: cargo test --no-fail-fast -- --nocapture --test-threads=1
+
+      - name: ipv6 pair on ::1
+        working-directory: spikes/ipv6-pair
+        run: |
+          cargo build --release
+          .\target\release\ipv6-pair.exe ::1
+
+      - name: upload exes
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: win-webrtc
+          path: |
+            spikes/ipv6-pair/target/release/ipv6-pair.exe
+          if-no-files-found: warn
+          retention-days: 14

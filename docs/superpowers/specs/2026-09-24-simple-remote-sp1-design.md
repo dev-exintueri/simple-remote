@@ -148,7 +148,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 |---|---|---|
 | 언어 | Rust | SYSTEM 서비스가 인터넷 입력을 처리하므로 메모리 안전성 필요. `windows-rs` 로 DDA·MF·서비스·세션 API 접근. 런타임 없는 단일 실행 파일. 참고 구현 RustDesk 가 Rust (AGPL-3.0 이라 코드는 가져오지 않음) |
 | 전송 | WebRTC (ICE, DTLS, SRTP/RTP, data channel), TURN 없음 | 경로 경주와 영상 전송(손실 복구, 혼잡 제어)을 표준에 맡긴다 |
-| WebRTC 라이브러리 | `str0m` 또는 `webrtc-rs` | 구현 계획 첫 단계 spike 로 확정 (11 절) |
+| WebRTC 라이브러리 | `str0m` 0.23.1 (sans-IO, crypto `aws-lc-rs`) | Phase 0 spike 로 확정 (D23). 기능 질문 5개 모두 통과, `webrtc-rs` 0.21 은 손실 뒤 대역폭 추정이 회복하지 못함. 근거: `docs/research/2026-09-23-sp1-phase0-spike-results.md` T4~T7 |
 | signaling | Cloudflare Workers + Durable Objects (무료 plan), TypeScript | VM 없이 운영. 무료 plan: 하루 요청 10만 건, WebSocket 메시지 20개 = 요청 1건 |
 | STUN | `stun.cloudflare.com:3478` | Cloudflare 문서상 "free and unlimited" |
 | UI | egui 후보 | Windows·macOS 공용. 영상 그리기 성능과 한글 입력은 spike 로 확정 |
@@ -518,3 +518,4 @@ viewer 상태 표시: 연결 중 / 연결됨(경로 종류) / 불안정 / 경로
 | D18 | 화면·입력·클립보드 (6 절) | 사용자 승인 |
 | D19 | 설치·제거·운영 (7 절) | 사용자 승인 |
 | D20 | 오류 처리·테스트·완료 기준, 순단 대비 추가 (8~10 절) | 사용자 승인 + 사용자 요구(순단) |
+| D23 | WebRTC 라이브러리는 `str0m` | Phase 0 spike 결과 (T7), 사용자 승인 |
