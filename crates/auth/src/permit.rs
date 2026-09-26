@@ -107,6 +107,9 @@ impl HostBook {
         device_key: &[u8; 32],
         now: SystemTime,
     ) -> Result<(), PermitError> {
+        // 검사 순서(Unknown, InSession, Expired, WrongDevice)는 밖에서 관찰할 수 없다:
+        // 번호(id)는 Noise 재접속 payload 안에서만 오가므로, 실패 종류가 순서대로
+        // 새는 정보는 그 payload 를 이미 열어 본 상대에게만 의미가 있다.
         let now_ms = unix_ms(now);
         let permit = self.permits.iter_mut().find(|p| &p.id == id).ok_or(PermitError::Unknown)?;
         let since_ms = match permit.state {
@@ -123,9 +126,14 @@ impl HostBook {
         Ok(())
     }
 
+    /// `Session` 인 허가증만 `Waiting` 으로 옮긴다. 이미 `Waiting` 이거나 없는 번호면
+    /// 아무것도 하지 않는다 (이미 끊긴 뒤 다시 부르면 최초 끊긴 시각이 뒤로 밀리며
+    /// 만료 시각이 늘어나 버리는 것을 막는다).
     pub fn end_session(&mut self, id: &[u8; 16], now: SystemTime) {
         if let Some(permit) = self.permits.iter_mut().find(|p| &p.id == id) {
-            permit.state = PermitState::Waiting { since_ms: unix_ms(now) };
+            if permit.state == PermitState::Session {
+                permit.state = PermitState::Waiting { since_ms: unix_ms(now) };
+            }
         }
     }
 
@@ -287,6 +295,23 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn end_session_twice_keeps_first_disconnect_time() {
+        let t = base_time();
+        let mut host = HostBook::default();
+        let v = viewer("뷰어");
+        let id = host.issue(&v);
+
+        host.end_session(&id, t);
+        host.end_session(&id, t + Duration::from_secs(50 * 60));
+
+        assert_eq!(
+            host.begin_reconnect(&id, &v.device_key, t + PERMIT_TTL),
+            Err(PermitError::Expired)
+        );
+        assert!(host.reconnect_candidates(t + PERMIT_TTL).is_empty());
     }
 
     #[test]
