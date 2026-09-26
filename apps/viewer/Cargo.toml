@@ -1,0 +1,10 @@
+[package]
+name = "viewer"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+protocol = { workspace = true }
+auth = { workspace = true }
+transport = { workspace = true }
+viewer-core = { workspace = true }

@@ -1,0 +1,2 @@
+# WSL 의 bash 로 실행하므로 Windows checkout 에서도 LF 를 유지한다.
+*.sh text eol=lf

@@ -11,7 +11,12 @@
   - 클라우드 세션: Task 0~9, 13 (PR #1, #2).
   - 로컬 Windows 세션 (사용자 개인 PC: Windows 11 Pro 26200, RTX 3060 Ti, 3840x2160 모니터 1대 배율 150%, IPv6 없음): Task 10, 11, 12, T6 전역 IPv6, Task 14. 작업 브랜치 `sp1-phase0-windows` → PR → `develop`.
   - Task 14 의 spec 반영 변경 S1~S9 를 사용자가 전부 승인했고 spec 과 결정 기록 D25~D32 에 반영했다.
-- **다음 할 일: 다음 구현 계획(무엇을 먼저 쓸지) 사용자 결정 대기.** 아래 "다음 할 일" 절 참고.
+- **"연결 뼈대" 계획 구현 끝남**: `docs/superpowers/plans/2026-09-26-sp1-connection-skeleton.md` 의 Task 1~10 완료. 작업 브랜치 `sp1-connection-plan` (PR → `develop` 전).
+  - 만든 것: `crates/protocol`(메시지), `crates/auth`(기기 key, 일회용 코드, SPAKE2, 봉인), `crates/transport`(str0m Peer, signaling WsLink, data channel), `crates/viewer-core`(viewer 연결 흐름), `apps/host-agent`(host 연결 흐름, 추측 제한, 등록, 콘솔 실행 파일), `apps/viewer`(콘솔 실행 파일), `signaling/`(Workers + Durable Object).
+  - 로컬 end-to-end: WSL 에서 `wsl.exe -e bash -lc '. ~/sr-env.sh && bash tools/e2e-local.sh'` 로 wrangler dev 위에서 등록 → 틀린 코드(viewer 종료 코드 1, "코드가 틀렸습니다") → 맞는 코드(허락, `PONG` 3줄, RTT 1~2ms) → `host-agent --once` 종료 코드 0 까지 확인, 마지막 줄 `E2E OK`. host 와 viewer 는 같은 WSL 안에서 `local_ips()` 주소로 바로 연결됐다.
+  - 틀린 코드 시도는 host 쪽에 `ATTEMPT NoConfirm` 으로 남는다. viewer 가 host MAC 으로 틀린 것을 먼저 알고 확인 MAC 없이 떠나기 때문이다 (계획대로의 동작, 실패는 Reply 전에 이미 기록됨).
+  - 자동 테스트: `cargo test --workspace --all-features` 와 `cd signaling && npm test` 모두 통과.
+  - Windows 에서 실행 파일을 직접 돌려 보지는 않았다 (std API 만 써서 빌드는 될 것으로 보지만 확인 전).
 
 ### 로컬 Windows 세션 기록 (Phase 0 남은 task, 끝남)
 
@@ -287,8 +292,30 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 
 ## 다음 할 일
 
-- Phase 0 끝. spike 결과를 입력으로 다음 구현 계획을 쓴다. 계획 분할 방침(순차 계획 여러 개)은 유지한다.
-- **사람 결정 필요: 어느 부분 계획을 먼저 쓸지.** 에이전트 추천(사용자 답 대기): "연결 뼈대" 계획. Rust workspace + `crates/auth`(PAKE, Noise KK, 기기 key) + `signaling/`(Workers) + `crates/transport`(str0m, socket·timer 루프) 로, 영상 없이 두 기기가 signaling → PAKE → 암호화 SDP 교환 → 직접 연결 → data channel 왕복까지 끝까지 동작하게 한다. 근거: spec 의 보안 경로(5절)가 모든 기능의 전제이고, 라이브러리가 모두 확정됐으며(D23, D25, D26), Linux 에서 가짜 네트워크로 자동 테스트할 수 있어 사람 PC 없이 진행된다. 화면·입력(Windows 전용)은 그 위에 다음 계획으로 올린다.
+- "연결 뼈대" 계획 구현이 끝났다 (Task 1~10, 로컬 e2e `E2E OK`). 사람 할 일: `sp1-connection-plan` 브랜치의 PR 검토와 `develop` 반영 결정.
+- 다음 계획 후보 (에이전트 추천 순서):
+  1. 재접속 허가증 + Noise KK (D26) + 기기 key·ID 저장 (Windows 는 DPAPI). 지금은 실행할 때마다 기기 key 와 ID 를 새로 만들어, 같은 host 에 다시 붙으려면 매번 코드가 필요하다. spec 4절, 5.3 과 5.2 6단계의 "이전에 연결한 기기" 표시가 여기에 걸린다.
+  2. 미룬 Kick 경쟁 수정: host 가 이미 떠난 viewer 를 내보내려고 보낸 `kick` 이 그 사이 들어온 다음 viewer 를 끊을 수 있다 (지금은 떠난 viewer 에게 Kick 하지 않는 것으로 줄여 둠). `viewer_joined` 와 `kick` 에 viewer 번호를 실어 서버가 번호가 맞을 때만 끊게 한다. protocol·signaling·host 를 함께 바꾼다.
+- 그 뒤로는 spec 에서 다음 계획으로 넘긴 것: 5.4 경로 경주·기록(STUN, UPnP), 5.6 접속 기록, 6~7절(화면·입력·설치), 8.2~8.3.
+- 최종 전체 검토(에이전트) 뒤 고친 것: 서버가 끊은 viewer socket 의 늦은 메시지 전달 차단, UDP datagram 하나의 오류(Windows `WSAECONNRESET`)로 연결 전체가 끝나지 않게 함, signaling 연결에 10초 대기 상한과 받는 메시지 128 KiB 상한, 받은 기기 이름의 길이·제어 문자 확인.
+- 사람 확인 필요: Windows 에서 host-agent 와 viewer 를 실제로 실행해 연결과 `--once` 종료 코드 0 을 확인 (지금까지 Linux/WSL 에서만 실행. 위 `WSAECONNRESET` 처리는 Windows 에서만 드러남). 허락을 21초 넘게 미뤄도 연결이 유지되는지도 한 번 확인.
+- 다음 계획에서 함께 처리할 작은 항목 (최종 검토 분류 "나중", 우선순위 순):
+  - 공개 배포 전: signaling `authenticate()` 가 서명 확인을 기다린 뒤 socket 상태를 다시 보지 않음, 인증하지 않은 host socket 시간 제한 없음(IPv6 /128 단위 요청 제한), viewer-id 요청 제한을 두 IP 로 소진해 정상 viewer 가 10분 막힘.
+  - host-agent 가 세션 중 signaling 을 읽지 않아, 그 사이 들어왔다 나간 viewer 의 옛 `Start` 에 세션 뒤 응답하고 실패를 하나 기록함 ("세션 중" 등록 모드와 함께).
+  - 콘솔 허락 질문: 앞 질문 뒤 미리 쳐 둔 줄이 다음 질문의 답으로 쓰일 수 있음 (host-ui 가 대신할 자리).
+  - signaling 이 끊기면 host-agent 가 다시 등록하지 않고 끝남 (spec 8.2), 세션 중 ICE 끊김 감지 (spec 8.3 heartbeat).
+  - 첫 배포 전: PAKE 코드 변환·HKDF label 을 고정하는 known-answer 테스트.
+  - 테스트 보강: signaling 의 426/400 순서·viewer-id 한도·65,536 byte 경계, 허락 대기 중 viewer 끊김, 일부 bind 실패, WsLink close code 유지.
+
+### 지난 기록 ("연결 뼈대" 계획 작성 때)
+
+- 사용자가 "연결 뼈대" 계획을 먼저 쓰기로 정했고(추천안 "진행"), 계획을 작성했다: `docs/superpowers/plans/2026-09-26-sp1-connection-skeleton.md`. 계획 작성 중 정한 것:
+  - 범위에서 재접속 허가증·Noise KK·기기 key 저장·STUN·경로 기록·순단 대비·host-ui 는 빼고 다음 계획으로 (첫 연결에 필요 없음).
+  - host 는 PAKE 응답(`Reply`)을 보내기 전에 실패를 먼저 기록하고, 올바른 확인 MAC 을 받을 때만 성공으로 초기화한다. 틀린 코드의 viewer 는 host MAC 으로 먼저 알고 조용히 떠날 수 있어서, 확인 MAC 이 올 때 기록하면 대기 시간 없이 추측할 수 있기 때문이다 (spec 5.5 를 지키는 구현 방식).
+  - API·버전 확인 결과 (에이전트 조사): 최신 ed25519/x25519/pakery 는 `rand_core` 0.10 세대라 난수는 `UnwrapErr(getrandom::SysRng)` 하나로 통일, `hkdf` 0.13 은 `sha2` 0.11 과만 맞음, `tungstenite` 0.30 의 `wss://` 는 rustls crypto provider(ring)를 따로 켜야 panic 이 안 남, str0m 0.23.1 은 DTLS 지문 불일치 시 `poll_output` 오류로 연결을 끊음(기본 켜짐), Workers 는 표준 `"Ed25519"` 지원, Free plan 은 SQLite DO 만, WebSocket 테스트 파일이 여러 개면 vitest `--max-workers=1 --no-isolate`.
+  - spec 보완 후보 (다음 spec 반영 때): Workers WebSocket 과금 "메시지 20개 = 요청 1건" 은 받는 메시지에만 해당.
+  - 실행 환경: 이 Windows PC 에는 Rust·Node 가 없다. 실행은 WSL(Rust 1.88 → 1.95 업데이트 필요, Node 24) 또는 클라우드 세션에서 한다.
+- (지난 기록) 에이전트 추천: "연결 뼈대" 계획. Rust workspace + `crates/auth`(PAKE, Noise KK, 기기 key) + `signaling/`(Workers) + `crates/transport`(str0m, socket·timer 루프) 로, 영상 없이 두 기기가 signaling → PAKE → 암호화 SDP 교환 → 직접 연결 → data channel 왕복까지 끝까지 동작하게 한다. 근거: spec 의 보안 경로(5절)가 모든 기능의 전제이고, 라이브러리가 모두 확정됐으며(D23, D25, D26), Linux 에서 가짜 네트워크로 자동 테스트할 수 있어 사람 PC 없이 진행된다. 화면·입력(Windows 전용)은 그 위에 다음 계획으로 올린다.
 - 계획을 쓸 때는 CLAUDE.md "작업 절차"의 계획 형식을 따르고, 결과 문서 "제품 계획에 넣을 사항"(T4, T7, T11, T13)을 해당 task 로 옮긴다.
 
 ### 지난 기록 (계획 작성 전 로컬 세션)
