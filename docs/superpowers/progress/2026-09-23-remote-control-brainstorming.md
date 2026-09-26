@@ -2,18 +2,21 @@
 
 이 파일만 읽고 다음 세션이 이어받을 수 있도록 단계가 끝날 때마다 갱신한다.
 
-## 로컬 Windows 세션 인계 (다음 세션이 가장 먼저 읽을 것)
+## 현재 상태와 인계 (다음 세션이 가장 먼저 읽을 것)
 
 ### 현재 상태
 
 - 설계는 끝났고 SP1 spec 이 승인됐다: `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md`.
-- SP1 Phase 0 계획 승인, 실행 중: `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md`. 결과는 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 의 task 별 절에 쌓는다.
-- 클라우드 세션에서 Task 0~9, 13 을 끝내고 `develop` 에 머지했다 (dev-exintueri/simple-remote PR #1, merge commit `d1a566f`).
-  - 통과: T1 Actions, T2 PAKE, T3 Noise KK, T4 str0m 5/5, T6 Windows 빌드·`::1`, T8 Workers, T9 SYSTEM DPAPI, T13 WiX 14/14. T5 webrtc-rs 4/5.
-  - 결정: D21~D24 (이 파일 "결정 기록"). WebRTC 는 str0m (D23).
-- 로컬 Windows 세션으로 옮긴 이유: 남은 spike 는 실제 Windows 화면·입력·GPU 가 필요하다.
+- **SP1 Phase 0 (spike) 끝남.** 계획 `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` 의 Task 0~14 완료. 결과와 판정은 `docs/research/2026-09-23-sp1-phase0-spike-results.md` (맨 끝 "종합" 절에 판정 표).
+  - 클라우드 세션: Task 0~9, 13 (PR #1, #2).
+  - 로컬 Windows 세션 (사용자 개인 PC: Windows 11 Pro 26200, RTX 3060 Ti, 3840x2160 모니터 1대 배율 150%, IPv6 없음): Task 10, 11, 12, T6 전역 IPv6, Task 14. 작업 브랜치 `sp1-phase0-windows` → PR → `develop`.
+  - Task 14 의 spec 반영 변경 S1~S9 를 사용자가 전부 승인했고 spec 과 결정 기록 D25~D32 에 반영했다.
+- **다음 할 일: 다음 구현 계획(무엇을 먼저 쓸지) 사용자 결정 대기.** 아래 "다음 할 일" 절 참고.
 
-### 로컬 세션이 할 일 (순서대로)
+### 로컬 Windows 세션 기록 (Phase 0 남은 task, 끝남)
+
+아래는 로컬 세션이 따른 순서다. 모두 끝났고, 결과는 결과 문서 T6, T10~T12, 종합 절에 있다.
+
 
 1. **사람 확인 먼저 (H1)**: 이 PC 에서 돌려도 되는지 사용자에게 묻는다. 예전 기록상 개발 PC 는 회사 관리 PC(Windows 11 Enterprise)로 보였다. Task 10 은 마우스를 몇 초간 움직이고, Task 11 은 PsExec 로 SYSTEM 권한 프로그램을 띄운다 (회사 보안 도구가 막거나 경고를 낼 수 있음). 답을 받기 전에는 exe 를 실행하지 않는다.
 2. **PC 정보 수집 (H2)**: 에이전트가 직접 조회하고 사용자에게 확인받는다.
@@ -33,6 +36,21 @@
 8. 각 결과를 결과 문서 `## T10`, `## T11`, `## T12`, `## T6` 에 계획의 기준으로 판정해 적는다.
 9. **Task 14**: 결과 문서 `## 종합` 에 판정 표와 spec 반영 변경 목록을 쓰고 사용자 승인을 받는다. 후보: PAKE 는 `pakery-spake2` P-256 (spec 5.2, 5.7), 재접속용 X25519 정적 key (spec 4절), UPnP 후보는 같은 socket 의 host 후보와 함께 (spec 5.4), `SendInput` 좌표 공식 (spec 6.3, T10 결과), 데이터 삭제·정책 값 복원은 LocalSystem deferred custom action (spec 7.1), 흔적 검사는 SYSTEM 으로 읽기 (spec 7.3). 승인된 것만 spec 과 이 파일 결정 기록에 함께 반영한다.
 10. 이 절과 "다음 할 일"을 갱신하고, 작업 브랜치 → PR → `develop` 으로 반영한다 (CLAUDE.md git 규칙).
+
+로컬 세션에서 계획과 다르게 한 것과 알게 된 것:
+
+- exe 는 인계 문서의 run 35899681949 대신 최신 `develop`(`d1a566f`)의 영역별 run 36226592235~7 artifact 를 받았다 (같은 코드, 성공한 run).
+- T10: 계획의 공식 A·B 가 둘 다 실패해, 측정값에서 규칙을 추론하고 올림 공식 C 를 전 픽셀 스윕 script (`spikes/sendinput-sweep/sweep.ps1`) 로 검증했다 (사용자 승인).
+- T12: 한글 IME 검사를 사용자 요청으로 `SendInput` + 화면 캡처로 자동화했다 (`spikes/egui-ime-auto/ime.ps1`). 측정값도 에이전트가 창을 캡처해 읽었다.
+- T11: SYSTEM 실행은 관리자 명령 프롬프트에서 사용자가 했다. 처음에 "액세스 거부"는 관리자 권한이 아닌 창에서 실행한 탓이었다.
+
+### 로컬 Windows 환경 메모 (이 PC 에서 다시 작업할 때)
+
+- 에이전트 셸은 sandbox 안에서 돈다. 작업 폴더 밖(`C:\spike`, `%LOCALAPPDATA%`)에 쓴 파일은 sandbox 를 끈 명령으로 써야 사용자 쪽에서도 보인다.
+- `gh` 는 winget MSI 설치가 UAC 창 없이 멈춰서, 공식 zip 판을 `%LOCALAPPDATA%\gh-cli\bin\gh.exe` 에 풀어 쓴다 (PATH 에 없음, `exintueri` 계정 로그인됨).
+- `C:\spike` 에 spike exe, `PsExec64.exe`, 측정 CSV·캡처가 있다.
+- Windows PowerShell 5.1 은 BOM 없는 UTF-8 `.ps1` 을 ANSI(CP949)로 읽는다. 한글 주석이 다음 줄을 먹은 일이 있어 spike script 는 ASCII 로 쓴다.
+- 관리자 권한 확인은 `whoami /groups` 의 `High Mandatory Level` 로 한다. `IsInRole('Administrators')` 문자열 검사는 이 PC 에서 관리자 창인데도 `False` 였다.
 
 ### 로컬 세션 주의 사항
 
@@ -257,11 +275,21 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
   - 제품 계획에 넣을 사항: 앱 heartbeat 로 ICE restart 를 직접 시작 (str0m 자체 끊김 감지 21초), UPnP 후보는 같은 socket 의 host 후보와 함께 둠, 경로 기록은 `PeerStats.selected_candidate_pair`, socket·timer 루프는 직접 작성.
   - spec 3.3 표와 12절 결정 기록에 반영.
 - D24. workflow 경로 조건을 Windows 관련 spike 폴더로 좁힘 (사용자 요청). `spikes/signaling`, `spikes/auth` 처럼 Windows 와 무관한 변경은 Windows 빌드를 돌리지 않는다.
+- D25~D32. Phase 0 Task 14 의 spec 반영 변경 S1~S9 전부 승인 (사용자 승인 "전부 승인"). 근거는 결과 문서의 해당 T 절.
+  - D25 (S1, T2): PAKE 는 `pakery-spake2` `=0.6.0` + `pakery-crypto` P-256 RFC 9382 suite. `crates/auth` 격리, RFC vector 테스트 유지. `spake2` 0.4 는 RFC 이전 draft·key 확인 없음, `opaque-ke` 는 aPAKE 라 일회용 코드 구조와 맞지 않아 제외. spec 5.2, 5.7.
+  - D26 (S2, T3): 재접속 key 합의는 `snow` Noise KK (`Noise_KK_25519_ChaChaPoly_BLAKE2s`). 기기마다 X25519 재접속 key 쌍을 두고 Ed25519 기기 key 로 서명해 묶음, key 길이 32 byte 확인. spec 4절, 5.3.
+  - D27 (S3, T4): 공유기 매핑 후보는 srflx 로 알리고 같은 socket 의 host 후보를 함께 둠, 경로 기록은 `PeerStats.selected_candidate_pair`. spec 5.4.
+  - D28 (S4, T10): `SendInput` 절대 좌표는 올림 공식 `((x - vx) * 65536 + vw - 1) / vw`. 되읽기 테스트는 다중 모니터 확인용으로 유지. spec 6.3.
+  - D29 (S5, T11): 하드웨어 MFT 는 `MFT_ENUM_FLAG_HARDWARE` 로 따로 열거, 스트림 끝·해상도 변경 때 drain. spec 6.2.
+  - D30 (S6, T12): UI 는 egui (eframe 0.36, wgpu), 한글 글꼴 `malgun.ttf` fallback. spec 3.3.
+  - D31 (S7·S8, T13): WiX 7.0.0 (`-acceptEula wix7`, OSMF 요금 면제). 데이터 삭제·`SoftwareSASGeneration` 복원은 LocalSystem deferred custom action, 업그레이드 때 데이터 유지. 흔적 검사 script 는 SYSTEM 으로 실행. spec 3.3, 7.1, 7.3.
+  - D32 (S9): spec 11절에 Phase 0 결과를 붙이고, 확인 못 한 조건(다중 모니터, Intel·AMD·hybrid GPU, 전역 IPv6)은 제품 단계 테스트로 넘김.
 
 ## 다음 할 일
 
-- 맨 앞 "로컬 Windows 세션 인계" 절의 "로컬 세션이 할 일" 1~10 을 순서대로 한다 (Phase 0 Task 10, 11, 12, T6 전역 IPv6, Task 14).
-- Phase 0 가 끝나면 spike 결과를 입력으로 다음 계획을 쓴다. 계획 분할 방침(순차 계획 여러 개)은 유지한다. 어느 부분 계획을 먼저 쓸지는 Task 14 에서 사용자와 정한다.
+- Phase 0 끝. spike 결과를 입력으로 다음 구현 계획을 쓴다. 계획 분할 방침(순차 계획 여러 개)은 유지한다.
+- **사람 결정 필요: 어느 부분 계획을 먼저 쓸지.** 에이전트 추천(사용자 답 대기): "연결 뼈대" 계획. Rust workspace + `crates/auth`(PAKE, Noise KK, 기기 key) + `signaling/`(Workers) + `crates/transport`(str0m, socket·timer 루프) 로, 영상 없이 두 기기가 signaling → PAKE → 암호화 SDP 교환 → 직접 연결 → data channel 왕복까지 끝까지 동작하게 한다. 근거: spec 의 보안 경로(5절)가 모든 기능의 전제이고, 라이브러리가 모두 확정됐으며(D23, D25, D26), Linux 에서 가짜 네트워크로 자동 테스트할 수 있어 사람 PC 없이 진행된다. 화면·입력(Windows 전용)은 그 위에 다음 계획으로 올린다.
+- 계획을 쓸 때는 CLAUDE.md "작업 절차"의 계획 형식을 따르고, 결과 문서 "제품 계획에 넣을 사항"(T4, T7, T11, T13)을 해당 task 로 옮긴다.
 
 ### 지난 기록 (계획 작성 전 로컬 세션)
 

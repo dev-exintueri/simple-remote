@@ -1,11 +1,12 @@
 # simple-remote SP1 설계: Windows 가족 원격 지원 최소 완성품
 
 - 작성일: 2026-09-24
-- 상태: 사용자 검토 대기
+- 상태: 사용자 승인. Phase 0 spike 결과 반영 (D23, D25~D32)
 - 근거 조사 문서
   - `docs/research/2026-09-23-teamviewer-features.md`: TeamViewer 기능 155개 분류 (A 26 / B 37 / C 37 / D 55)
   - `docs/research/2026-09-23-p2p-networking-and-security.md`: P2P 연결, NAT traversal, 보안, 오픈소스 참고 구현
   - `docs/research/2026-09-23-host-platform-windows-macos.md`: 화면 캡처, 인코딩, 입력, DPI, 멀티 모니터, 클립보드, 권한, 배포
+  - `docs/research/2026-09-23-sp1-phase0-spike-results.md`: Phase 0 spike 결과 (라이브러리 선택, Windows 동작 확인)
 
 이 문서의 사실 주장은 위 조사 문서의 해당 절에 1차 출처가 있다. 조사 근거가 아니라 설계자가 정한 값은 "설계 제안값"으로 표시한다.
 
@@ -151,8 +152,8 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 | WebRTC 라이브러리 | `str0m` 0.23.1 (sans-IO, crypto `aws-lc-rs`) | Phase 0 spike 로 확정 (D23). 기능 질문 5개 모두 통과, `webrtc-rs` 0.21 은 손실 뒤 대역폭 추정이 회복하지 못함. 근거: `docs/research/2026-09-23-sp1-phase0-spike-results.md` T4~T7 |
 | signaling | Cloudflare Workers + Durable Objects (무료 plan), TypeScript | VM 없이 운영. 무료 plan: 하루 요청 10만 건, WebSocket 메시지 20개 = 요청 1건 |
 | STUN | `stun.cloudflare.com:3478` | Cloudflare 문서상 "free and unlimited" |
-| UI | egui 후보 | Windows·macOS 공용. 영상 그리기 성능과 한글 입력은 spike 로 확정 |
-| 설치 | WiX Toolset 으로 만든 MSI | 표준 제거 경로, 실패 시 되돌리기, 선언적 파일·서비스 관리 |
+| UI | egui (eframe 0.36, wgpu). 한글 글꼴은 시스템 `C:\Windows\Fonts\malgun.ttf` 를 fallback 글꼴로 넣는다 (기본 글꼴에 한글 없음) | Windows·macOS 공용. Phase 0 T12 로 확정 (D30): 1080p30 영상 texture 갱신 cpu p95 약 7ms, Microsoft 한국어 IME 조합·확정·조합 중 백스페이스 정상, 배율 변경에 `pixels_per_point` 가 따라감 |
+| 설치 | WiX Toolset 7.0.0 으로 만든 MSI. 빌드에 `-acceptEula wix7` 필요 (OSMF EULA, 개인 비영리는 유지 보수 요금 면제) | 표준 제거 경로, 실패 시 되돌리기, 선언적 파일·서비스 관리. Phase 0 T13 으로 서비스·방화벽·SYSTEM 전용 폴더·재시작·제거 확인 (D31) |
 
 ---
 
@@ -163,6 +164,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 | host 기기 key | 설치 후 최초 실행 시 Ed25519 key 쌍 생성 | `ProgramData\SimpleRemote\` (SYSTEM 전용 파일 권한) + SYSTEM 계정 범위 DPAPI. `CRYPTPROTECT_LOCAL_MACHINE` 범위는 그 PC 의 모든 사용자가 풀 수 있어 쓰지 않는다 |
 | 접속 ID | 9자리 숫자. host 가 처음 signaling 에 등록할 때 서버가 발급하고 host 공개키에 묶는다. host 는 등록마다 서명으로 key 소유를 증명한다 | ID 는 찾아가는 주소일 뿐 신뢰 근거가 아니다 |
 | viewer 기기 key | 첫 실행 시 Ed25519 key 쌍 생성, 사용자가 기기 이름을 정한다 (허락 창에 표시) | `%APPDATA%\SimpleRemote\` + 사용자 범위 DPAPI |
+| 재접속 key | host·viewer 모두 기기 key 와 함께 X25519 정적 key 쌍을 하나 더 만든다. 공개키는 자기 Ed25519 기기 key 로 서명해 기기 신원에 묶고, 첫 연결 5단계에서 기기 공개키와 함께 교환한다. Noise KK(5.3 절)는 X25519 key 만 받기 때문이다 (D26) | 기기 key 와 같은 저장소, 같은 보관·폐기 규칙 |
 | 재접속 허가증 | 5.3 절 | host: ProgramData 저장소. viewer: APPDATA 저장소 |
 | 알고 있는 상대 | viewer 는 연결했던 host 의 ID·공개키·표시 이름, host 는 연결했던 viewer 의 공개키·기기 이름 | 같은 저장소 |
 
@@ -185,7 +187,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 
 1. 가족이 host-ui("원격 지원 받기")를 연다. host-agent 가 숫자 6자리 일회용 코드를 만들고 host-ui 가 ID 와 코드를 보여 준다. 이때만 agent 는 "새 연결 받기" 모드로 등록하고, host 공유기에 UPnP/NAT-PMP/PCP 매핑을 요청한다.
 2. 사용자가 viewer 에 ID 와 코드를 입력한다. viewer 가 signaling 에 연결 요청을 보낸다.
-3. **PAKE 를 가장 먼저** signaling 을 거쳐 수행한다 (SPAKE2, RFC 9382 후보). key 확인 MAC 까지 끝나야 다음으로 간다. 틀리면 여기서 끝나므로 코드를 모르는 사람에게 host 주소 후보가 전달되지 않는다.
+3. **PAKE 를 가장 먼저** signaling 을 거쳐 수행한다 (SPAKE2, RFC 9382. `pakery-spake2` `=0.6.0` + `pakery-crypto` P256-SHA256-HKDF-SHA256-HMAC-SHA256 suite, D25). key 확인 MAC 까지 끝나야 다음으로 간다. 틀리면 여기서 끝나므로 코드를 모르는 사람에게 host 주소 후보가 전달되지 않는다.
 4. PAKE 결과 key 로 SDP offer/answer 와 이후 ICE candidate 를 AEAD(인증 암호화)로 보호해 교환한다. 각 쪽 DTLS 인증서 지문은 이 보호된 SDP 안에 있으므로 signaling 서버가 바꿔치기할 수 없다.
 5. ICE 경로 경주로 직접 연결을 만들고 DTLS 를 연다. 상대 인증서 지문이 4 단계에서 받은 값과 다르면 끊는다. 암호 채널 안에서 두 기기가 장기 공개키와 기기 이름을 교환하고 각자 서명으로 소유를 증명한다.
 6. host-ui 가 허락 창을 띄운다: "[viewer 기기 이름]이 원격 제어를 요청합니다", 처음 보는 기기인지 이전에 연결한 기기인지 표시. 30초 안에 허락하지 않으면 거절.
@@ -209,7 +211,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 **재접속 흐름**
 
 1. viewer 가 host ID 와 허가증 번호로 signaling 에 재접속 요청을 보낸다.
-2. 저장된 서로의 공개키로 상호 인증 key 합의를 한다 (Noise 프로토콜 KK 패턴 후보). host 는 허가증의 viewer 공개키와 일치하는지, 허가증이 대기 상태이고 만료 전인지 확인한다. viewer 는 저장된 host 공개키와 일치하는지 확인한다.
+2. 저장된 서로의 재접속 공개키(4절)로 상호 인증 key 합의를 한다 (Noise 프로토콜 KK 패턴, `snow` crate, `Noise_KK_25519_ChaChaPoly_BLAKE2s`, D26). `snow` 는 key 길이를 검사하지 않으므로 넘기기 전에 정확히 32 byte 인지 확인한다. 상대 key 가 틀리면 첫 메시지에서 실패한다. host 는 허가증의 viewer 공개키와 일치하는지, 허가증이 대기 상태이고 만료 전인지 확인한다. viewer 는 저장된 host 공개키와 일치하는지 확인한다.
 3. 합의한 key 로 5.2 절 4~5 단계와 같이 연결 정보를 교환하고 연결한다.
 4. 허락 창 없이 세션을 시작한다. 가족 화면에 "재접속됨" 알림과 "원격 제어 중" 막대를 표시한다.
 
@@ -227,9 +229,10 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 ### 5.4 경로 경주와 경로 기록
 
 - 후보: host 로컬 주소, STUN 으로 알아낸 공인 주소, IPv6, host 공유기 자동 매핑 주소(UPnP IGD / NAT-PMP / PCP). viewer 도 로컬·공인·IPv6 후보를 낸다.
+- 공유기 매핑 주소는 SDP 에 srflx 후보로 알리고, local 후보 목록에는 같은 socket 의 host 후보를 반드시 함께 둔다. str0m 은 srflx 후보만 있으면 연결 확인을 받지 못한다 (D27).
 - 공유기 매핑은 대기·세션 중에만 두고 유효 시간을 붙인다 (1시간, 필요하면 갱신. 설계 제안값). 제거가 비정상 종료돼도 유효 시간이 지나면 공유기에서 사라진다.
 - relay 후보는 없다. 나중에 relay 를 붙일 때는 후보 하나로 추가한다 (구조 변경 없음).
-- 경로 기록 (viewer): 시도마다 후보 쌍별 결과, 최종 선택 경로 종류(로컬 / 공인 / 공유기 매핑 / IPv6), 실패 원인 범주, 양쪽 네트워크 유형 추정. relay 필요 여부 판단의 근거 자료다.
+- 경로 기록 (viewer): 시도마다 후보 쌍별 결과, 최종 선택 경로 종류(로컬 / 공인 / 공유기 매핑 / IPv6), 실패 원인 범주, 양쪽 네트워크 유형 추정. relay 필요 여부 판단의 근거 자료다. 선택 경로는 str0m `RtcConfig::set_stats_interval` 의 `Event::PeerStats.selected_candidate_pair` 로 얻는다 (local 주소는 srflx 가 아니라 base socket 주소로 나온다).
 - 예상 실패율: 직접 연결 기법만으로는 연결의 약 10~30% 가 실패한다 (조사 추정. TeamViewer 직접 연결 70%, libp2p 측정 70% ± 7.1%). 휴대폰 데이터망에서는 더 높다. 사용자는 이 실패를 감수하고 실측 후 판단하기로 했다 (D12).
 
 ### 5.5 공격 대비
@@ -262,7 +265,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 ### 5.7 알려진 한계
 
 - 재부팅 직후 로그인 화면에서는 가족 권한 창을 띄울 수 없어 "원격 제어 중" 막대는 로그인 직후부터 보인다.
-- Rust 의 balanced PAKE 라이브러리(`spake2`, RustCrypto)는 공식 보안 감사를 받지 않았다. RFC 9382 테스트 값으로 검증하고, PAKE 코드를 `crates/auth` 에 격리하며, 감사를 받은 `opaque-ke` 와 구현 계획 단계에서 비교한다.
+- PAKE 라이브러리 `pakery-spake2` 는 1인 프로젝트이고 공식 보안 감사를 받지 않았으며 버전마다 API 가 자주 바뀐다. 버전을 `=0.6.0` 으로 고정하고, PAKE 코드를 `crates/auth` 에 격리하며, RFC 9382 Appendix B 테스트 값과 틀린 코드 거부 테스트를 `crates/auth` 테스트에 둔다. RustCrypto `spake2` 0.4 는 RFC 이전 draft 이고 key 확인이 없어 쓰지 않는다. 감사를 받은 `opaque-ke` 는 서버 등록 기록을 두는 aPAKE 라 매 세션 새 일회용 코드를 쓰는 구조에 맞지 않아 제외했다 (Phase 0 T2).
 - 공유기 매핑·IPv6 가 없는 환경에서 양쪽 중 하나라도 hole punching 이 안 되는 NAT 뒤에 있으면 연결되지 않는다.
 
 ---
@@ -280,7 +283,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 
 | 항목 | 설계 |
 |---|---|
-| 코덱 | H.264 만. 인코딩은 MF H.264 encoder MFT: 하드웨어 MFT 우선, 없거나 실패하면 Windows 내장 소프트웨어 MFT. 디코딩은 MF H.264 decoder (D3D11 가속, 안 되면 소프트웨어) |
+| 코덱 | H.264 만. 인코딩은 MF H.264 encoder MFT: 하드웨어 MFT 우선, 없거나 실패하면 Windows 내장 소프트웨어 MFT. 디코딩은 MF H.264 decoder (D3D11 가속, 안 되면 소프트웨어). 하드웨어 MFT 는 `MFTEnumEx` 에 `MFT_ENUM_FLAG_HARDWARE` 를 줘서 따로 열거한다 (flag 없이는 목록에 나오지 않는다). 스트림 끝과 해상도 변경 때는 `MFT_MESSAGE_COMMAND_DRAIN` 으로 인코더가 들고 있는 프레임을 꺼낸다. SYSTEM agent 가 사용자 세션에서 하드웨어 MFT 에 D3D11 NV12 texture 를 넣어 인코딩하는 것은 NVIDIA GPU 에서 확인했다 (D29, Phase 0 T11) |
 | 코덱 협상 | 세션 시작 시 양쪽이 가능한 코덱·profile 목록을 교환해 고른다. SP1 은 H.264 하나지만 구조는 처음부터 둔다. H.264 는 언제나 가능한 기본값으로 유지한다 (모바일 viewer 공통 코덱) |
 | 색 변환·크기 | GPU 의 D3D11 video processor 로 BGRA → NV12 변환과 크기 조정을 한 번에 한다. 기본값은 모니터 화면을 비율을 유지한 채 1920x1080 안에 들어가게 줄여 보낸다 (더 작은 모니터는 그대로). viewer 에서 "원본 화질"을 켜면 모니터 해상도 그대로 보낸다 |
 | 지연 설정 | `CODECAPI_AVLowLatencyMode` 켜기, B-frame 없음. viewer 가 깨진 프레임을 감지하면 key frame 을 요청하고 host 는 `CODECAPI_AVEncVideoForceKeyFrame` 으로 응답 |
@@ -293,7 +296,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 
 - host 실행 파일은 manifest 로 Per-Monitor v2 DPI aware 로 선언한다.
 - host 의 모든 좌표는 physical pixel 기준 virtual desktop 좌표로 통일한다. origin 은 음수일 수 있다.
-- viewer 는 "보고 있는 모니터 안의 physical pixel 좌표"로 입력을 보낸다. host 는 virtual desktop 좌표로 바꾼 뒤 `SendInput` 절대 좌표(0..65535, `MOUSEEVENTF_VIRTUALDESK`)로 변환한다. 반올림 규칙은 문서에 없으므로 주입 후 `GetCursorPos` 로 되읽어 1픽셀 단위로 맞는지 확인하는 테스트를 둔다.
+- viewer 는 "보고 있는 모니터 안의 physical pixel 좌표"로 입력을 보낸다. host 는 virtual desktop 좌표로 바꾼 뒤 `SendInput` 절대 좌표(0..65535, `MOUSEEVENTF_VIRTUALDESK`)로 변환한다. 변환은 올림 공식 `nx = ((x - vx) * 65536 + vw - 1) / vw`, `ny = ((y - vy) * 65536 + vh - 1) / vh` 를 쓴다 (정수 나눗셈, `vx, vy, vw, vh` 는 virtual desktop origin 과 크기). Windows 는 값을 `floor(n * vw / 65536)` 픽셀로 바꾸므로 흔히 쓰는 `* 65535 / (vw - 1)` 나 반올림 공식은 1픽셀 모자라는 자리가 생긴다 (D28, Phase 0 T10: 3840x2160 모니터 6000 지점에서 올림 공식 불일치 0건). 다중 모니터·음수 origin 은 확인하지 못했으므로 주입 후 `GetCursorPos` 로 되읽어 1픽셀 단위로 맞는지 확인하는 테스트를 둔다.
 - viewer 보기 방식: 화면 맞춤(비율 유지), 원래 크기(1:1, 스크롤). viewer 도 Per-Monitor v2 DPI aware.
 - host 해상도, 회전, DPI 가 바뀌면 캡처를 다시 붙이고 새 모니터 정보를 보내며 viewer 가 자동으로 맞춘다.
 
@@ -350,6 +353,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 | 바로가기 | 바탕화면·시작 메뉴 "원격 지원 받기" | 삭제 |
 | 공유기 매핑 | 설치 시 만들지 않음 (5.4 절) | 제거 시작 시 해제 시도, 실패해도 유효 시간 후 소멸 |
 
+- 데이터 폴더 삭제와 `SoftwareSASGeneration` 원래 값 복원은 WiX 선언만으로 되지 않는다. 둘 다 LocalSystem 으로 도는 deferred custom action(`Impersonate="no"`)으로 한다. `util:RemoveFolderEx` 는 설치 사용자 권한으로 돌아 SYSTEM 전용 폴더를 읽지 못하고 실패를 성공으로 바꿔 조용히 폴더를 남기며, `RegistryValue` 에는 복원 동작이 없다. 데이터 삭제는 업그레이드 때(`UPGRADINGPRODUCTCODE`) 하지 않는다 (D31, Phase 0 T13).
 - host-ui 는 로그인 시 자동 실행하지 않고 트레이 아이콘도 없다. 세션 중 host-ui 가 없으면 service 가 띄운다.
 - 첫 설치: 링크 전달 → 가족이 MSI 실행 → SmartScreen 경고에서 "추가 정보 → 실행" → UAC "예" → 바로가기 생성. 전화 안내를 전제로 한다.
 - 제거 순서: 진행 중 세션 종료 → 공유기 매핑 해제 → signaling 등록 해제(가능하면) → 서비스 중지·삭제 → 파일·데이터 삭제 → 방화벽 규칙 삭제 → 정책 복원 → 바로가기 삭제.
@@ -362,6 +366,7 @@ host-agent, viewer → signaling : 연결 시작, 재접속, 경로 재탐색 �
 ### 7.3 제거 흔적 검사
 
 - `tools/` 에 PowerShell 검사 스크립트를 둔다. 깨끗한 Windows VM 에서 설치 전 상태를 기록하고, 설치 → 연결 → 제거 뒤 다시 기록해 비교한다.
+- 검사 스크립트는 SYSTEM 으로 실행한다 (예: `PsExec -s`). 관리자 계정은 SYSTEM 전용 폴더의 ACL 조차 읽지 못해 흔적을 놓친다 (D31, Phase 0 T13).
 - 비교 대상: 서비스 목록, `Program Files`·`ProgramData`·사용자 프로필 아래 관련 경로, 관련 레지스트리(Uninstall, Services, 정책 값), 방화벽 규칙, 바로가기, 예약 작업.
 - 차이가 1건이라도 있으면 실패. 출시마다 실행한다.
 
@@ -480,17 +485,25 @@ viewer 상태 표시: 연결 중 / 연결됨(경로 종류) / 불안정 / 경로
 
 ## 11. 구현 계획 단계에서 먼저 확인할 것 (spike)
 
-| 항목 | 확인할 내용 | 영향 |
-|---|---|---|
-| WebRTC 라이브러리 (`str0m` / `webrtc-rs`) | 외부 후보(UPnP 매핑 주소) 추가, ICE restart, H.264 RTP packetization, data channel(신뢰·비신뢰), 대역폭 추정, Windows IPv6 후보 동작 | `crates/transport`, `crates/codec` |
-| UI (egui) | 1080p30 영상 텍스처 갱신 지연, 한글 IME 입력, Per-Monitor v2 DPI | `apps/viewer`, `apps/host-ui` |
-| PAKE | `spake2` 와 `opaque-ke` 비교, RFC 9382 테스트 값 | `crates/auth` |
-| 재접속 key 합의 | Noise KK 구현 crate 선택 | `crates/auth` |
-| SYSTEM 계정 DPAPI | LocalSystem 으로 암호화한 데이터를 다른 계정이 풀 수 없는지 | 4 절 저장소 |
-| MF 인코더 | SYSTEM 권한 agent(사용자 세션)에서 하드웨어 MFT 생성, D3D11 texture 입력 | `crates/codec` |
-| 입력 좌표 | `SendInput` 절대 좌표 반올림 되읽기 테스트 | `crates/platform-win` |
-| WiX Toolset | 현재 버전과 이용 조건, 서비스·방화벽·정책 복원 구성 | `installer/` |
-| Cloudflare Workers 로컬 테스트 도구 | Durable Object·WebSocket 을 포함한 테스트 방법 | `signaling/` |
+Phase 0 에서 모두 확인했다. 결과와 판정은 `docs/research/2026-09-23-sp1-phase0-spike-results.md` 의 T 번호 절에 있다.
+
+| 항목 | 확인할 내용 | 영향 | Phase 0 결과 |
+|---|---|---|---|
+| WebRTC 라이브러리 (`str0m` / `webrtc-rs`) | 외부 후보(UPnP 매핑 주소) 추가, ICE restart, H.264 RTP packetization, data channel(신뢰·비신뢰), 대역폭 추정, Windows IPv6 후보 동작 | `crates/transport`, `crates/codec` | T4~T7: `str0m` 5/5, Windows 빌드와 `::1` 연결 통과 (D23, D27) |
+| UI (egui) | 1080p30 영상 텍스처 갱신 지연, 한글 IME 입력, Per-Monitor v2 DPI | `apps/viewer`, `apps/host-ui` | T12: 성능·IME 통과, DPI 는 배율 변경만 확인 (D30) |
+| PAKE | `spake2` 와 `opaque-ke` 비교, RFC 9382 테스트 값 | `crates/auth` | T2: `pakery-spake2` P-256 (D25) |
+| 재접속 key 합의 | Noise KK 구현 crate 선택 | `crates/auth` | T3: `snow` + X25519 재접속 key (D26) |
+| SYSTEM 계정 DPAPI | LocalSystem 으로 암호화한 데이터를 다른 계정이 풀 수 없는지 | 4 절 저장소 | T9: 통과 |
+| MF 인코더 | SYSTEM 권한 agent(사용자 세션)에서 하드웨어 MFT 생성, D3D11 texture 입력 | `crates/codec` | T11: NVIDIA 에서 통과 (D29) |
+| 입력 좌표 | `SendInput` 절대 좌표 반올림 되읽기 테스트 | `crates/platform-win` | T10: 올림 공식 확정, 모니터 1대 조건 (D28) |
+| WiX Toolset | 현재 버전과 이용 조건, 서비스·방화벽·정책 복원 구성 | `installer/` | T13: 7.0.0, 14/14 통과, 삭제·복원은 custom action (D31) |
+| Cloudflare Workers 로컬 테스트 도구 | Durable Object·WebSocket 을 포함한 테스트 방법 | `signaling/` | T8: `@cloudflare/vitest-plugin`, npm 11 |
+
+Phase 0 에서 확인하지 못해 제품 단계 테스트로 넘긴 조건 (D32):
+
+- 다중 모니터(배율 혼합, 음수 origin)에서 `SendInput` 올림 공식과 viewer 창의 모니터 간 이동 DPI.
+- Intel·AMD·hybrid GPU 에서 SYSTEM agent 의 하드웨어 MFT.
+- 실제 전역 IPv6 주소로 UDP 연결.
 
 ---
 
@@ -519,3 +532,11 @@ viewer 상태 표시: 연결 중 / 연결됨(경로 종류) / 불안정 / 경로
 | D19 | 설치·제거·운영 (7 절) | 사용자 승인 |
 | D20 | 오류 처리·테스트·완료 기준, 순단 대비 추가 (8~10 절) | 사용자 승인 + 사용자 요구(순단) |
 | D23 | WebRTC 라이브러리는 `str0m` | Phase 0 spike 결과 (T7), 사용자 승인 |
+| D25 | PAKE 는 `pakery-spake2` `=0.6.0` P-256 RFC 9382 suite, `opaque-ke` 제외 | Phase 0 T2, 사용자 승인 |
+| D26 | 재접속 key 합의는 `snow` Noise KK, 기기마다 X25519 재접속 key 를 Ed25519 서명으로 묶음 | Phase 0 T3, 사용자 승인 |
+| D27 | 공유기 매핑 후보는 srflx 로 알리고 같은 socket 의 host 후보를 함께 둠 | Phase 0 T4, 사용자 승인 |
+| D28 | `SendInput` 절대 좌표는 올림 공식 | Phase 0 T10, 사용자 승인 |
+| D29 | 하드웨어 MFT 별도 열거, 스트림 끝·해상도 변경 때 drain | Phase 0 T11, 사용자 승인 |
+| D30 | UI 는 egui (eframe 0.36), 한글 글꼴 맑은 고딕 fallback | Phase 0 T12, 사용자 승인 |
+| D31 | WiX 7.0.0, 데이터 삭제·정책 복원은 LocalSystem deferred custom action, 흔적 검사는 SYSTEM 으로 실행 | Phase 0 T13, 사용자 승인 |
+| D32 | Phase 0 에서 확인 못 한 조건(다중 모니터, 다른 GPU, 전역 IPv6)은 제품 단계 테스트로 넘김 | 사람 PC 조건 (모니터 1대, NVIDIA 하나, IPv6 없음), 사용자 승인 |
