@@ -1,7 +1,11 @@
+mod code;
 mod error;
 mod identity;
+mod pake;
 mod rng;
 
+pub use code::OneTimeCode;
 pub use error::AuthError;
 pub use identity::{DeviceKeys, PeerIdentity, Role, key_fingerprint, verify_hello};
+pub use pake::{HostPake, SessionKeys, ViewerPake};
 pub use rng::rng;
