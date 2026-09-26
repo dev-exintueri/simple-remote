@@ -1,15 +1,14 @@
 //! host 쪽 첫 연결 흐름: viewer 하나를 받아 PAKE, 봉인한 SDP 교환, Hello 확인, 허락까지 처리한다.
 
-use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use auth::{DeviceKeys, HostPake, OneTimeCode, PeerIdentity, Role, SessionKeys, key_fingerprint, verify_hello};
-use protocol::control::{self, Control, Decision, RejectReason};
+use protocol::control::{Control, Decision, RejectReason};
 use protocol::pake_msg::{self, PakeMsg};
 use protocol::signaling::{HostToServer, ServerToHost};
 use protocol::{Stage, Timeouts};
-use transport::{Link, LinkError, Peer, PeerEvent, TransportError};
+use transport::{Channel, Link, LinkError, Next, Opened, Peer, TransportError};
 
 use crate::AttemptLimiter;
 
@@ -91,15 +90,13 @@ impl HostSession {
         let deadline = Instant::now() + for_at_most;
         loop {
             match self.ch.next(deadline)? {
-                Next::Data(d) => match control::decode(&d) {
-                    Ok(Control::Ping { seq }) => self.ch.send(&Control::Pong { seq })?,
-                    Ok(_) => {}
-                    Err(_) => {
-                        // 해독할 수 없는 메시지를 보내는 상대와는 연결을 끊는다.
-                        self.ch.close();
-                        return Ok(());
-                    }
-                },
+                Next::Msg(Control::Ping { seq }) => self.ch.send(&Control::Pong { seq })?,
+                Next::Msg(_) => {}
+                Next::Malformed => {
+                    // 해독할 수 없는 메시지를 보내는 상대와는 연결을 끊는다.
+                    self.ch.close();
+                    return Ok(());
+                }
                 Next::Closed | Next::TimedOut => return Ok(()),
             }
         }
@@ -107,12 +104,14 @@ impl HostSession {
 }
 
 /// `ViewerJoined` 를 기다려 viewer 하나를 끝까지 처리하고 돌아온다.
-/// `approve` 의 둘째 인자는 허락 제한 시간이다.
+/// `approve` 는 막히지 않는 질문 함수다: `None` 은 아직 답 없음, `Some(true/false)` 는 답.
+/// 허락을 기다리는 동안 host 는 peer 를 계속 poll 하며 약 50ms 마다 `approve` 를 부르고,
+/// `timeouts.approval` 이 지나면 `NoResponse` 로 거절한다.
 pub fn serve_next<L: Link<ServerToHost, HostToServer>>(
     link: &mut L,
     cfg: &HostConfig,
     state: &mut HostState,
-    approve: &mut dyn FnMut(&ApprovalRequest, Duration) -> bool,
+    approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
 ) -> Result<ServeOutcome, HostError> {
     // 앞 viewer 가 남긴 ViewerLeft, Relay 는 버린다.
     while link.recv(cfg.timeouts.signaling_step)? != Some(ServerToHost::ViewerJoined) {}
@@ -124,7 +123,7 @@ fn attempt<L: Link<ServerToHost, HostToServer>>(
     link: &mut L,
     cfg: &HostConfig,
     state: &mut HostState,
-    approve: &mut dyn FnMut(&ApprovalRequest, Duration) -> bool,
+    approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
 ) -> Result<ServeOutcome, HostError> {
     use AttemptFailure as F;
     let t = &cfg.timeouts;
@@ -176,7 +175,7 @@ fn attempt<L: Link<ServerToHost, HostToServer>>(
     };
     // 이 뒤로 실패해 돌아가면 `ch` 가 drop 되며 peer 를 닫는다.
     let mut ch = Channel::new(peer);
-    let Ok(answer) = ch.peer.accept_offer(&offer) else {
+    let Ok(answer) = ch.peer().accept_offer(&offer) else {
         return reject_relay(link, F::Malformed);
     };
     send_relay(link, &PakeMsg::Answer { sealed_answer: sender.seal(answer.as_bytes()) })?;
@@ -193,7 +192,7 @@ fn handshake(
     cfg: &HostConfig,
     state: &mut HostState,
     sk: &SessionKeys,
-    approve: &mut dyn FnMut(&ApprovalRequest, Duration) -> bool,
+    approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
 ) -> ServeOutcome {
     use AttemptFailure as F;
     let t = &cfg.timeouts;
@@ -205,8 +204,8 @@ fn handshake(
         Ok(Opened::Closed) | Err(_) => return fail(F::Transport),
     }
 
-    let local = ch.peer.local_fingerprint();
-    let Some(remote) = ch.peer.remote_fingerprint() else {
+    let local = ch.peer().local_fingerprint();
+    let Some(remote) = ch.peer().remote_fingerprint() else {
         return fail(F::BadIdentity);
     };
     let mut hello = cfg.keys.make_hello(Role::Host, &sk.hello_binding, &local, &remote);
@@ -216,10 +215,8 @@ fn handshake(
     }
 
     let viewer_hello = match ch.next(Instant::now() + t.signaling_step) {
-        Ok(Next::Data(d)) => match control::decode(&d) {
-            Ok(Control::Hello(h)) => h,
-            _ => return fail(F::Malformed),
-        },
+        Ok(Next::Msg(Control::Hello(h))) => h,
+        Ok(Next::Msg(_) | Next::Malformed) => return fail(F::Malformed),
         Ok(Next::TimedOut) => return fail(F::Timeout(Stage::Hello)),
         Ok(Next::Closed) | Err(_) => return fail(F::Transport),
     };
@@ -235,14 +232,54 @@ fn handshake(
         viewer_name: viewer.name.clone(),
         viewer_key_fingerprint: key_fingerprint(&viewer.device_key),
     };
-    if !approve(&req, t.approval) {
-        return reject_decision(ch, RejectReason::Denied, F::Denied, t.signaling_step);
+    match wait_approval(&mut ch, &req, approve, t.approval) {
+        Approval::Granted => {}
+        Approval::Denied => return reject_decision(ch, RejectReason::Denied, F::Denied, t.signaling_step),
+        Approval::NoResponse => return reject_decision(ch, RejectReason::NoResponse, F::Denied, t.signaling_step),
+        Approval::Failed(f) => return fail(f),
     }
     if ch.send(&Control::Decision(Decision::Accepted)).is_err() {
         return fail(F::Transport);
     }
     state.code = OneTimeCode::generate();
     ServeOutcome::Session(HostSession { viewer, ch })
+}
+
+/// 허락 질문 사이에 peer 를 poll 하는 간격. 이 동안에도 STUN consent 에 답해야 ICE 가 유지된다.
+const APPROVAL_POLL: Duration = Duration::from_millis(50);
+
+enum Approval {
+    Granted,
+    Denied,
+    NoResponse,
+    Failed(AttemptFailure),
+}
+
+/// peer 를 계속 poll 하면서 `approve` 가 답할 때까지, 최대 `limit` 동안 기다린다.
+/// 이 단계의 viewer 는 Decision 을 기다리기만 하므로, 무엇이든 보내면 규칙 위반으로 끊는다.
+fn wait_approval(
+    ch: &mut Channel,
+    req: &ApprovalRequest,
+    approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
+    limit: Duration,
+) -> Approval {
+    let deadline = Instant::now() + limit;
+    loop {
+        match approve(req) {
+            Some(true) => return Approval::Granted,
+            Some(false) => return Approval::Denied,
+            None => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Approval::NoResponse;
+        }
+        match ch.next((now + APPROVAL_POLL).min(deadline)) {
+            Ok(Next::TimedOut) => {}
+            Ok(Next::Msg(_) | Next::Malformed) => return Approval::Failed(AttemptFailure::Malformed),
+            Ok(Next::Closed) | Err(_) => return Approval::Failed(AttemptFailure::Transport),
+        }
+    }
 }
 
 /// signaling 에 남아 있는 viewer 를 내보내고 실패로 끝낸다.
@@ -268,7 +305,7 @@ fn reject_relay<L: Link<ServerToHost, HostToServer>>(
 fn reject_decision(mut ch: Channel, reason: RejectReason, failure: AttemptFailure, linger: Duration) -> ServeOutcome {
     if ch.send(&Control::Decision(Decision::Rejected(reason))).is_ok() {
         let deadline = Instant::now() + linger;
-        while let Ok(Next::Data(_)) = ch.next(deadline) {}
+        while let Ok(Next::Msg(_) | Next::Malformed) = ch.next(deadline) {}
     }
     ServeOutcome::Failed(failure)
 }
@@ -297,90 +334,3 @@ fn recv_relay<L: Link<ServerToHost, HostToServer>>(link: &mut L, timeout: Durati
     })
 }
 
-enum Opened {
-    Ready,
-    Closed,
-    TimedOut,
-}
-
-enum Next {
-    Data(Vec<u8>),
-    Closed,
-    TimedOut,
-}
-
-/// `Peer` 와, 기다리는 동안 먼저 도착한 data 를 담아 두는 큐. drop 되면 peer 를 닫는다.
-struct Channel {
-    peer: Peer,
-    pending: VecDeque<Vec<u8>>,
-    closed: bool,
-}
-
-impl Channel {
-    fn new(peer: Peer) -> Channel {
-        Channel { peer, pending: VecDeque::new(), closed: false }
-    }
-
-    fn absorb(&mut self, events: Vec<PeerEvent>) -> bool {
-        let mut opened = false;
-        for ev in events {
-            match ev {
-                PeerEvent::ChannelOpen => opened = true,
-                PeerEvent::Data(d) => self.pending.push_back(d),
-                PeerEvent::Closed => self.closed = true,
-                PeerEvent::Connected => {}
-            }
-        }
-        opened
-    }
-
-    fn wait_open(&mut self, deadline: Instant) -> Result<Opened, TransportError> {
-        loop {
-            if self.closed {
-                return Ok(Opened::Closed);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(Opened::TimedOut);
-            }
-            let events = self.peer.poll(deadline - now)?;
-            if self.absorb(events) {
-                return Ok(Opened::Ready);
-            }
-        }
-    }
-
-    fn next(&mut self, deadline: Instant) -> Result<Next, TransportError> {
-        loop {
-            if let Some(d) = self.pending.pop_front() {
-                return Ok(Next::Data(d));
-            }
-            if self.closed {
-                return Ok(Next::Closed);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(Next::TimedOut);
-            }
-            let events = self.peer.poll(deadline - now)?;
-            self.absorb(events);
-        }
-    }
-
-    fn send(&mut self, msg: &Control) -> Result<(), TransportError> {
-        self.peer.send(&control::encode(msg))
-    }
-
-    fn close(&mut self) {
-        // close 는 SCTP shutdown 과 DTLS close_notify 를 준비만 하므로 한 번 내보내 상대가 빨리 알게 한다.
-        self.peer.close();
-        let _ = self.peer.poll(Duration::ZERO);
-        self.closed = true;
-    }
-}
-
-impl Drop for Channel {
-    fn drop(&mut self) {
-        self.close();
-    }
-}

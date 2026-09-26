@@ -1,15 +1,14 @@
 //! viewer 쪽 첫 연결 흐름: signaling 위의 PAKE, 봉인한 SDP 교환, data channel 위의 Hello 와 허락.
 
-use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use auth::{AuthError, DeviceKeys, OneTimeCode, PeerIdentity, Role, SessionKeys, ViewerPake, verify_hello};
-use protocol::control::{self, Control, Decision, RejectReason};
+use protocol::control::{Control, Decision, RejectReason};
 use protocol::pake_msg::{self, PakeMsg};
 use protocol::signaling::{ServerToViewer, ViewerToServer};
 use protocol::{PROTOCOL_VERSION, Stage, Timeouts};
-use transport::{Link, LinkError, Peer, PeerEvent, TransportError};
+use transport::{Channel, Link, LinkError, Next, Opened, Peer, TransportError};
 
 /// 버전이 더 낮은 쪽.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +87,7 @@ impl ViewerSession {
         let deadline = start + timeout;
         self.ch.send(&Control::Ping { seq })?;
         loop {
-            match self.ch.next_control(deadline, Stage::Ping)? {
+            match next_control(&mut self.ch, deadline, Stage::Ping)? {
                 Control::Pong { seq: got } if got == seq => return Ok(start.elapsed()),
                 // 앞서 시간이 지난 Ping 의 늦은 Pong 등은 건너뛴다.
                 _ => continue,
@@ -142,7 +141,7 @@ fn handshake<L: Link<ServerToViewer, ViewerToServer>>(
     keys: &DeviceKeys,
     t: &Timeouts,
 ) -> Result<PeerIdentity, ConnectError> {
-    let (offer, pending) = ch.peer.create_offer()?;
+    let (offer, pending) = ch.peer().create_offer()?;
     let (mut sender, mut receiver) = sk.viewer_side();
     let sealed_offer = sender.seal(offer.as_bytes());
     send_relay(link, &PakeMsg::Confirm { mac_a, sealed_offer })?;
@@ -157,7 +156,7 @@ fn handshake<L: Link<ServerToViewer, ViewerToServer>>(
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
         .ok_or(ConnectError::Security("sealed answer"))?;
-    ch.peer.accept_answer(pending, &answer)?;
+    ch.peer().accept_answer(pending, &answer)?;
 
     match ch.wait_open(Instant::now() + t.connect)? {
         Opened::Ready => {}
@@ -165,17 +164,17 @@ fn handshake<L: Link<ServerToViewer, ViewerToServer>>(
         Opened::TimedOut => return Err(ConnectError::Timeout(Stage::Connect)),
     }
 
-    let local = ch.peer.local_fingerprint();
-    let remote = ch.peer.remote_fingerprint().ok_or(ConnectError::Security("no remote fingerprint"))?;
+    let local = ch.peer().local_fingerprint();
+    let remote = ch.peer().remote_fingerprint().ok_or(ConnectError::Security("no remote fingerprint"))?;
     ch.send(&Control::Hello(keys.make_hello(Role::Viewer, &sk.hello_binding, &local, &remote)))?;
 
-    let host = match ch.next_control(Instant::now() + t.signaling_step, Stage::Hello)? {
+    let host = match next_control(ch, Instant::now() + t.signaling_step, Stage::Hello)? {
         Control::Hello(h) => verify_hello(&h, Role::Host, &sk.hello_binding, &remote, &local)
             .map_err(|_| ConnectError::Security("host identity"))?,
         _ => return Err(ConnectError::Security("unexpected control")),
     };
 
-    match ch.next_control(Instant::now() + t.approval + t.signaling_step, Stage::Decision)? {
+    match next_control(ch, Instant::now() + t.approval + t.signaling_step, Stage::Decision)? {
         Control::Decision(Decision::Accepted) => Ok(host),
         Control::Decision(Decision::Rejected(RejectReason::VersionMismatch { host_version })) => {
             Err(ConnectError::VersionMismatch {
@@ -215,93 +214,12 @@ fn recv_relay<L: Link<ServerToViewer, ViewerToServer>>(
     }
 }
 
-enum Opened {
-    Ready,
-    Closed,
-    TimedOut,
-}
 
-enum Next {
-    Data(Vec<u8>),
-    Closed,
-    TimedOut,
-}
-
-/// `Peer` 와, 기다리는 동안 먼저 도착한 data 를 담아 두는 큐. drop 되면 peer 를 닫는다.
-struct Channel {
-    peer: Peer,
-    pending: VecDeque<Vec<u8>>,
-    closed: bool,
-}
-
-impl Channel {
-    fn new(peer: Peer) -> Channel {
-        Channel { peer, pending: VecDeque::new(), closed: false }
-    }
-
-    fn absorb(&mut self, events: Vec<PeerEvent>) -> bool {
-        let mut opened = false;
-        for ev in events {
-            match ev {
-                PeerEvent::ChannelOpen => opened = true,
-                PeerEvent::Data(d) => self.pending.push_back(d),
-                PeerEvent::Closed => self.closed = true,
-                PeerEvent::Connected => {}
-            }
-        }
-        opened
-    }
-
-    fn wait_open(&mut self, deadline: Instant) -> Result<Opened, TransportError> {
-        loop {
-            if self.closed {
-                return Ok(Opened::Closed);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(Opened::TimedOut);
-            }
-            let events = self.peer.poll(deadline - now)?;
-            if self.absorb(events) {
-                return Ok(Opened::Ready);
-            }
-        }
-    }
-
-    fn next(&mut self, deadline: Instant) -> Result<Next, TransportError> {
-        loop {
-            if let Some(d) = self.pending.pop_front() {
-                return Ok(Next::Data(d));
-            }
-            if self.closed {
-                return Ok(Next::Closed);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(Next::TimedOut);
-            }
-            let events = self.peer.poll(deadline - now)?;
-            self.absorb(events);
-        }
-    }
-
-    fn next_control(&mut self, deadline: Instant, stage: Stage) -> Result<Control, ConnectError> {
-        match self.next(deadline)? {
-            Next::Data(d) => control::decode(&d).map_err(|_| ConnectError::Security("malformed control")),
-            Next::Closed => Err(ConnectError::HostLeft),
-            Next::TimedOut => Err(ConnectError::Timeout(stage)),
-        }
-    }
-
-    fn send(&mut self, msg: &Control) -> Result<(), TransportError> {
-        self.peer.send(&control::encode(msg))
-    }
-}
-
-impl Drop for Channel {
-    fn drop(&mut self) {
-        // close 는 SCTP shutdown 과 DTLS close_notify 를 준비만 하므로 한 번 내보내 상대가 빨리 알게 한다.
-        self.peer.close();
-        let _ = self.peer.poll(Duration::ZERO);
+fn next_control(ch: &mut Channel, deadline: Instant, stage: Stage) -> Result<Control, ConnectError> {
+    match ch.next(deadline)? {
+        Next::Msg(msg) => Ok(msg),
+        Next::Malformed => Err(ConnectError::Security("malformed control")),
+        Next::Closed => Err(ConnectError::HostLeft),
+        Next::TimedOut => Err(ConnectError::Timeout(stage)),
     }
 }

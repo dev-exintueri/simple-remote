@@ -19,7 +19,7 @@ type Seen = Arc<Mutex<Vec<ApprovalRequest>>>;
 fn spawn_host(mut link: impl Link<ServerToHost, HostToServer> + Send + 'static, cfg: HostConfig,
               mut state: HostState, allow: bool, seen: Seen) -> JoinHandle<(ServeOutcome, HostState, HostConfig)> {
     thread::spawn(move || {
-        let mut approve = |r: &ApprovalRequest, _: Duration| { seen.lock().unwrap().push(r.clone()); allow };
+        let mut approve = |r: &ApprovalRequest| { seen.lock().unwrap().push(r.clone()); Some(allow) };
         let mut out = serve_next(&mut link, &cfg, &mut state, &mut approve).unwrap();
         if let ServeOutcome::Session(s) = &mut out { s.serve_pings(Duration::from_secs(3)).unwrap(); }
         (out, state, cfg)
@@ -73,7 +73,7 @@ fn retry_after_during_backoff() {
         let second = connect(hub2.viewer(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
         (first, second)
     });
-    let mut deny = |_: &ApprovalRequest, _: Duration| false;
+    let mut deny = |_: &ApprovalRequest| Some(false);
     serve_next(&mut host_link, &c, &mut state, &mut deny).unwrap();
     let replies_before = relays_of_host(&hub).iter().filter(|m| matches!(m, PakeMsg::Reply { .. })).count();
     let out = serve_next(&mut host_link, &c, &mut state, &mut deny).unwrap();
@@ -139,4 +139,44 @@ fn garbage_confirm_counts_as_failure() {
     let (out, state, _) = h.join().unwrap();
     assert!(matches!(out, ServeOutcome::Failed(AttemptFailure::WrongCode)));
     assert!(state.limiter.check(Instant::now()).is_err());
+}
+
+#[test]
+fn approval_times_out_as_no_response() {
+    let (hub, mut host_link) = FakeHub::new();
+    let mut c = cfg(PROTOCOL_VERSION);
+    c.timeouts.approval = Duration::from_secs(1);
+    let mut state = HostState::new();
+    let code = state.code.clone();
+    let h = thread::spawn(move || {
+        let mut never = |_: &ApprovalRequest| None;
+        let out = serve_next(&mut host_link, &c, &mut state, &mut never).unwrap();
+        (out, state)
+    });
+    let r = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    assert!(matches!(r, Err(ConnectError::Rejected(RejectReason::NoResponse))));
+    let (out, state) = h.join().unwrap();
+    assert!(matches!(out, ServeOutcome::Failed(AttemptFailure::Denied)));
+    assert_eq!(state.code.as_str(), code.as_str());
+}
+
+#[test]
+fn slow_approval_keeps_connection() {
+    let (hub, mut host_link) = FakeHub::new();
+    let c = cfg(PROTOCOL_VERSION);
+    let mut state = HostState::new();
+    let code = state.code.clone();
+    let h = thread::spawn(move || {
+        let mut first_call: Option<Instant> = None;
+        let mut slow = |_: &ApprovalRequest| {
+            let first = *first_call.get_or_insert_with(Instant::now);
+            (first.elapsed() >= Duration::from_secs(2)).then_some(true)
+        };
+        let mut out = serve_next(&mut host_link, &c, &mut state, &mut slow).unwrap();
+        if let ServeOutcome::Session(s) = &mut out { s.serve_pings(Duration::from_secs(3)).unwrap(); }
+        out
+    });
+    let mut s = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default()).unwrap();
+    assert!(s.ping(Duration::from_secs(2)).unwrap() < Duration::from_secs(2));
+    assert!(matches!(h.join().unwrap(), ServeOutcome::Session(_)));
 }
