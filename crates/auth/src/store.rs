@@ -48,7 +48,10 @@ impl<P: Protector> StateFile<P> {
             return Err(StoreError::Corrupt);
         }
         let plain = self.protector.unprotect(&bytes[MAGIC.len()..])?;
-        let value = postcard::from_bytes(&plain).map_err(|_| StoreError::Corrupt)?;
+        let (value, remainder) = postcard::take_from_bytes(&plain).map_err(|_| StoreError::Corrupt)?;
+        if !remainder.is_empty() {
+            return Err(StoreError::Corrupt);
+        }
         Ok(Some(value))
     }
 
@@ -211,6 +214,56 @@ mod tests {
         let result: Result<Option<String>, StoreError> = sf.load();
         assert!(matches!(result, Err(StoreError::Corrupt)));
         assert_eq!(fs::read(&path).unwrap(), truncated);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trailing_bytes_are_corrupt() {
+        let dir = unique_dir();
+        let path = dir.join("state.bin");
+        let sf = StateFile::new(path.clone(), DevPlaintextProtector);
+        sf.save(&"value".to_string()).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let mut with_garbage = original.clone();
+        with_garbage.push(0xAB);
+        fs::write(&path, &with_garbage).unwrap();
+
+        let result: Result<Option<String>, StoreError> = sf.load();
+        assert!(matches!(result, Err(StoreError::Corrupt)));
+        assert_eq!(fs::read(&path).unwrap(), with_garbage);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_creates_missing_directory() {
+        let dir = unique_dir();
+        let path = dir.join("nested").join("deeper").join("state.bin");
+        let sf = StateFile::new(path.clone(), DevPlaintextProtector);
+
+        sf.save(&"value".to_string()).unwrap();
+        let loaded: String = sf.load().unwrap().unwrap();
+        assert_eq!(loaded, "value");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn failed_protect_keeps_existing_file() {
+        let dir = unique_dir();
+        let path = dir.join("state.bin");
+
+        let working = StateFile::new(path.clone(), DevPlaintextProtector);
+        working.save(&"value".to_string()).unwrap();
+        let original = fs::read(&path).unwrap();
+
+        let failing = StateFile::new(path.clone(), FailingProtector);
+        let result = failing.save(&"other".to_string());
+        assert!(matches!(result, Err(StoreError::Protect(_))));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!tmp_path_for(&path).exists());
 
         let _ = fs::remove_dir_all(&dir);
     }
