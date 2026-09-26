@@ -643,7 +643,7 @@ fn backoff_is_capped() {
   - `host_agent::HostConfig { pub host_id: String, pub keys: DeviceKeys, pub bind_ips: Vec<IpAddr>, pub timeouts: Timeouts, pub protocol_version: u32 }` (`protocol_version` 은 기본 `PROTOCOL_VERSION`, 버전 불일치 테스트에서만 바꿈)
   - `host_agent::HostState { pub code: OneTimeCode, pub limiter: AttemptLimiter }`, `HostState::new() -> HostState`
   - `host_agent::ApprovalRequest { pub viewer_name: String, pub viewer_key_fingerprint: String }`
-  - `host_agent::serve_next<L: Link<ServerToHost, HostToServer>>(link: &mut L, cfg: &HostConfig, state: &mut HostState, approve: &mut dyn FnMut(&ApprovalRequest, Duration) -> bool) -> Result<ServeOutcome, HostError>`: `ViewerJoined` 를 기다려 viewer 하나를 끝까지 처리하고 돌아온다. `approve` 의 둘째 인자는 허락 제한 시간 (30초).
+  - `host_agent::serve_next<L: Link<ServerToHost, HostToServer>>(link: &mut L, cfg: &HostConfig, state: &mut HostState, approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>) -> Result<ServeOutcome, HostError>`: `ViewerJoined` 를 기다려 viewer 하나를 끝까지 처리하고 돌아온다. `approve` 는 막히지 않는 질문 함수다: host 는 허락을 기다리는 동안 `Peer` 를 계속 poll 하면서 약 50ms 마다 `approve` 를 부르고, `None` 은 "아직 답 없음", `Some(true/false)` 는 답이다. host 가 `t.approval`(30초) 기한을 직접 지키고, 넘으면 `Rejected(NoResponse)` → `Failed(Denied)`. (막히는 함수로 두면 허락을 약 21초 넘게 기다릴 때 host 가 STUN consent 에 답하지 않아 ICE 가 끊긴다 — Task 9 검토에서 str0m/is 소스로 확인)
   - `enum ServeOutcome { Session(HostSession), Failed(AttemptFailure), ViewerLeft }`, `enum AttemptFailure { WaitRequired, NoConfirm, WrongCode, Malformed, Timeout(Stage), Denied, VersionMismatch, BadIdentity, Transport }` (`NoConfirm` = Reply 를 보낸 뒤 viewer 가 확인 MAC 없이 떠남. 틀린 코드의 viewer 는 host MAC 으로 먼저 알아채고 떠나므로 대부분의 틀린 코드는 이것으로 끝난다), `Stage` 는 `protocol::Stage`
   - `HostSession::serve_pings(&mut self, for_at_most: Duration) -> Result<(), HostError>` (Ping 에 Pong, `Closed` 나 시간이 되면 끝)
   - `HostError { Link(LinkError), Transport(TransportError) }` (signaling 자체가 끊긴 경우만. viewer 쪽 문제는 `ServeOutcome::Failed`)
@@ -654,7 +654,7 @@ fn backoff_is_capped() {
   4. host: `ViewerLeft` 나 시간 초과면 `Failed(NoConfirm)` (실패는 2단계에서 이미 기록). `confirm(mac_a)` 실패 → relay `Rejected` + `Kick` → `Failed(WrongCode)`. 봉인 열기 실패·해독 불가 메시지 → `Rejected` + `Kick` → `Failed(Malformed)`. 확인 MAC 이 맞으면 `limiter.record_success()` (봉인 열기가 그 뒤에 실패해도 코드는 맞았으므로 초기화는 유지), `accept_offer` → relay `Answer { sealed_answer }`.
   5. viewer: `accept_answer`. 양쪽이 `ChannelOpen` 까지 `poll` (`t.connect`).
   6. 양쪽이 즉시 `Control::Hello` 를 보낸다 (`make_hello(role, &keys.hello_binding, &peer.local_fingerprint(), &peer.remote_fingerprint()?)`). 상대 Hello 는 `verify_hello(.., sender_fp = 상대 지문(remote), receiver_fp = 자기 지문(local))`.
-  7. host: viewer Hello 확인 실패 → `Decision::Rejected(BadIdentity)`. 버전 다름 → `Rejected(VersionMismatch { host_version })`. 확인되면 `approve(&req, t.approval)`: false → `Rejected(Denied)`. true → `Decision::Accepted`, `state.code = OneTimeCode::generate()` → `ServeOutcome::Session`.
+  7. host: viewer Hello 확인 실패 → `Decision::Rejected(BadIdentity)`. 버전 다름 → `Rejected(VersionMismatch { host_version })`. 확인되면 `Peer` 를 poll 하며 `approve(&req)` 가 `Some` 을 낼 때까지 기다린다 (`t.approval` 초과 → `Rejected(NoResponse)`): `Some(false)` → `Rejected(Denied)`. true → `Decision::Accepted`, `state.code = OneTimeCode::generate()` → `ServeOutcome::Session`.
   8. viewer: host Hello 확인 실패 → `Security("host identity")` 로 끊음. `Decision` 을 받아 `Accepted` 면 `ViewerSession`. `VersionMismatch { host_version }` 이면 `older` = 작은 쪽.
   - host 는 PAKE 가 끝나기 전 `ViewerLeft` 를 받으면 `ServeOutcome::ViewerLeft`. viewer 는 `HostLeft` 나 link 닫힘을 `ConnectError::HostLeft` 로.
 
@@ -682,7 +682,7 @@ type Seen = Arc<Mutex<Vec<ApprovalRequest>>>;
 fn spawn_host(mut link: impl Link<ServerToHost, HostToServer> + Send + 'static, cfg: HostConfig,
               mut state: HostState, allow: bool, seen: Seen) -> JoinHandle<(ServeOutcome, HostState, HostConfig)> {
     thread::spawn(move || {
-        let mut approve = |r: &ApprovalRequest, _: Duration| { seen.lock().unwrap().push(r.clone()); allow };
+        let mut approve = |r: &ApprovalRequest| { seen.lock().unwrap().push(r.clone()); Some(allow) };
         let mut out = serve_next(&mut link, &cfg, &mut state, &mut approve).unwrap();
         if let ServeOutcome::Session(s) = &mut out { s.serve_pings(Duration::from_secs(3)).unwrap(); }
         (out, state, cfg)
@@ -736,7 +736,7 @@ fn retry_after_during_backoff() {
         let second = connect(hub2.viewer(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
         (first, second)
     });
-    let mut deny = |_: &ApprovalRequest, _: Duration| false;
+    let mut deny = |_: &ApprovalRequest| Some(false);
     serve_next(&mut host_link, &c, &mut state, &mut deny).unwrap();
     let replies_before = relays_of_host(&hub).iter().filter(|m| matches!(m, PakeMsg::Reply { .. })).count();
     let out = serve_next(&mut host_link, &c, &mut state, &mut deny).unwrap();
@@ -805,6 +805,9 @@ fn garbage_confirm_counts_as_failure() {
 }
 ```
 
+  추가 테스트 (Task 9 검토 뒤 추가): `approval_times_out_as_no_response` (`cfg.timeouts.approval = 1초`, `approve` 가 늘 `None` → viewer `Err(ConnectError::Rejected(RejectReason::NoResponse))`, host `Failed(Denied)`, 코드 그대로), `slow_approval_keeps_connection` (`approve` 가 2초 동안 `None` 뒤 `Some(true)` → viewer ping 성공).
+  공용 연결 도우미: viewer 와 host 가 함께 쓰는 data channel 처리(`Channel`: `wait_open`, 다음 control 메시지, `send(&Control)`, drop 시 close)는 `crates/transport/src/channel.rs` 에 둔다 (두 곳에 같은 코드를 두지 않음).
+
   이 테스트가 요구하는 것: `FakeHub: Clone`, `ApprovalRequest: Clone`, `OneTimeCode: Clone`, `FakeHostLink: Send`, `HostConfig.keys` 공개 필드. Task 7·8·9 구현이 이를 만족해야 한다. dev-dependency `hex`.
 - [ ] **Step 2: 실패 확인** — `cargo test -p host-agent --test first_connection`. 기대: 컴파일 실패.
 - [ ] **Step 3: 구현** — `crates/viewer-core/src/connect.rs`, `apps/host-agent/src/session.rs`. 메시지 해독 실패(`pake_msg::decode`, hex, `control::decode`)는 모두 fail closed 로 처리한다.
@@ -823,7 +826,7 @@ fn garbage_confirm_counts_as_failure() {
 **Interfaces:**
 - Produces:
   - `host_agent::register_host(server: &str, keys: &DeviceKeys, id: Option<&str>) -> Result<(String, WsLink<ServerToHost, HostToServer>), RegisterError>`: `{server}/v1/host?key=<hex>` (또는 `/v1/host/<id>?key=`) 에 연결 → `Challenge { nonce, id }` (기존 ID 로 연결했으면 `id` 가 같은지 확인) → `Auth { sig: hex(keys.sign_raw(b"simple-remote signaling auth v1" || nonce || id)) }` → `Registered { id }` 의 id 가 challenge 의 id 와 같은지 확인. 어긋나면 `RegisterError::Protocol`. `RegisterError { Link(LinkError), Protocol(&'static str) }`.
-  - `host-agent` 실행: `host-agent --server <url> [--name <이름>] [--once]`. 표준 출력 한 줄씩 `ID <9자리>`, `CODE <6자리>` (코드가 바뀔 때마다 다시), 허락 질문은 `APPROVE? <viewer 이름> <key 지문> [y/N]` 을 출력하고 stdin 한 줄을 30초 기다린다 (시간 초과·EOF·`y` 외 입력은 거절). `--once` 는 세션 하나가 끝나면 종료 코드 0.
+  - `host-agent` 실행: `host-agent --server <url> [--name <이름>] [--once]`. 표준 출력 한 줄씩 `ID <9자리>`, `CODE <6자리>` (코드가 바뀔 때마다 다시), 허락 질문은 `APPROVE? <viewer 이름> <key 지문> [y/N]` 을 출력하고, stdin 한 줄을 읽는 별도 thread 의 결과를 `approve` 가 `try_recv` 로 확인한다 (`None` = 아직, `y` → `Some(true)`, EOF·그 밖 입력 → `Some(false)`, 30초 기한은 `serve_next` 가 지킴). `--once` 는 세션 하나가 끝나면 종료 코드 0.
   - `viewer` 실행: `viewer --server <url> --id <9자리> --code <6자리> [--name <이름>]`. 성공 시 `CONNECTED <host 이름> <host key 지문>` 과 `PONG rtt_ms=<n>` 3번 출력 후 종료 코드 0. 실패 시 `ConnectError` 를 사람이 읽을 문장으로(`WrongCode` → "코드가 틀렸습니다", `RetryAfter(d)` → "N초 뒤 다시 시도하세요", `HostNotWaiting` → "상대가 대기 중이 아닙니다", 버전 불일치 → 어느 쪽이 구버전인지) 출력하고 종료 코드 1. 코드는 출력하지 않는다.
   - bind 주소는 `transport::local_ips()`, 비어 있으면 `127.0.0.1`.
 - [ ] **Step 1: 실패하는 end-to-end script 작성** — `tools/e2e-local.sh` (bash, `set -euo pipefail`):
@@ -851,7 +854,7 @@ fn garbage_confirm_counts_as_failure() {
 | 5.2 3단계 PAKE 먼저, key 확인 MAC 뒤 진행 | 3, 9 (순서 1~4) |
 | 5.2 4단계 PAKE key 로 SDP AEAD 보호, 지문이 보호된 SDP 안 | 4, 9 |
 | 5.2 5단계 DTLS 지문 확인, 장기 공개키·이름 교환과 서명 증명 | 6, 2, 9 (순서 6) |
-| 5.2 6단계 허락 30초, 처음 보는 기기 표시 | 9 (`approve` 제한 시간), 10 (콘솔 질문). "이전에 연결한 기기" 표시는 기기 저장이 생기는 다음 계획 |
+| 5.2 6단계 허락 30초, 처음 보는 기기 표시 | 9 (host 가 `t.approval` 기한을 지키는 막히지 않는 `approve`, `approval_times_out_as_no_response`), 10 (콘솔 질문을 별도 thread 로). "이전에 연결한 기기" 표시는 기기 저장이 생기는 다음 계획 |
 | 5.2 7단계 사용한 코드 폐기·새 코드 | 9 |
 | 4절 접속 ID 9자리, 서버 발급, 공개키에 묶음, 등록마다 서명 | 5, 10 |
 | 4절 재접속 key (X25519, Ed25519 서명 묶음) | 2 (교환·확인만, 사용은 다음 계획) |
