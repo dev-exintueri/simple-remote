@@ -70,6 +70,15 @@ fn map_confirmation_err(err: Spake2Error) -> AuthError {
     }
 }
 
+/// `finish` 에서 나는 오류 분류: 점 디코딩 실패만 `Malformed("pake point")`,
+/// 그 밖의 (확인 실패가 아닌) 오류는 `Malformed("pake")`.
+fn map_finish_err(err: Spake2Error) -> AuthError {
+    match err {
+        Spake2Error::InvalidPoint => AuthError::Malformed("pake point"),
+        _ => AuthError::Malformed("pake"),
+    }
+}
+
 /// Viewer 쪽 (SPAKE2 Party A) 진행 상태.
 pub struct ViewerPake {
     state: pakery_spake2::PartyAState<Spake2P256>,
@@ -85,10 +94,7 @@ impl ViewerPake {
     }
 
     pub fn finish(self, pb: &[u8], mac_b: &[u8]) -> Result<(SessionKeys, Vec<u8>), AuthError> {
-        let output = self
-            .state
-            .finish(pb)
-            .map_err(|_| AuthError::Malformed("pake point"))?;
+        let output = self.state.finish(pb).map_err(map_finish_err)?;
         let mac_b = to_mac(mac_b)?;
         output
             .verify_peer_confirmation(&mac_b)
@@ -113,9 +119,7 @@ impl HostPake {
         let id_b = host_id_bytes(host_id);
         let (pb, state) = PartyB::<Spake2P256>::start(&w, VIEWER_ID, &id_b, AAD, &mut rng())
             .map_err(|_| AuthError::Malformed("pake"))?;
-        let output = state
-            .finish(pa)
-            .map_err(|_| AuthError::Malformed("pake point"))?;
+        let output = state.finish(pa).map_err(map_finish_err)?;
         let mac_b = output.confirmation_mac.to_vec();
         Ok((HostPake { output }, pb, mac_b))
     }
@@ -161,6 +165,20 @@ mod tests {
         let (v, pa) = ViewerPake::start(&code("123456"), "111111111").unwrap();
         let (_h, pb, mac_b) = HostPake::respond(&code("123456"), "222222222", &pa).unwrap();
         assert!(matches!(v.finish(&pb, &mac_b), Err(AuthError::WrongCode)));
+    }
+
+    #[test]
+    fn wrong_length_mac_fails_closed_without_panic() {
+        let (v, pa) = ViewerPake::start(&code("123456"), "123456789").unwrap();
+        let (h, pb, mac_b) = HostPake::respond(&code("123456"), "123456789", &pa).unwrap();
+        assert!(matches!(
+            v.finish(&pb, &mac_b[..16]),
+            Err(AuthError::WrongCode)
+        ));
+        assert!(matches!(
+            h.confirm(&[0u8; 40]),
+            Err(AuthError::WrongCode)
+        ));
     }
 
     #[test]

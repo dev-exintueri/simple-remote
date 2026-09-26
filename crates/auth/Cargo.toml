@@ -16,4 +16,7 @@ hex = { workspace = true }
 hkdf = { workspace = true }
 pakery-core = { workspace = true }
 pakery-crypto = { workspace = true }
+pakery-spake2 = { workspace = true }
+
+[dev-dependencies]
 pakery-spake2 = { workspace = true, features = ["test-utils"] }
