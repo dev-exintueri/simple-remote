@@ -8,7 +8,8 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use auth::{DeviceKeys, key_fingerprint};
-use host_agent::{ApprovalRequest, HostConfig, HostState, ServeOutcome, register_host, serve_next};
+use host_agent::{ApprovalRequest, HostConfig, HostState, ServeOutcome, register_host, serve_next, set_mode};
+use protocol::signaling::HostMode;
 use protocol::{PROTOCOL_VERSION, Timeouts};
 
 const USAGE: &str = "usage: host-agent --server <url> [--name <이름>] [--once]";
@@ -59,6 +60,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(e) = set_mode(&mut link, HostMode::New) {
+        eprintln!("signaling 서버에 모드를 알리지 못했습니다: {e}");
+        return ExitCode::FAILURE;
+    }
     let mut bind_ips = transport::local_ips();
     if bind_ips.is_empty() {
         bind_ips.push(IpAddr::V4(Ipv4Addr::LOCALHOST));

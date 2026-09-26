@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use auth::{DeviceKeys, HostPake, OneTimeCode, PeerIdentity, Role, SessionKeys, key_fingerprint, verify_hello};
 use protocol::control::{Control, Decision, RejectReason};
 use protocol::pake_msg::{self, PakeMsg};
-use protocol::signaling::{HostToServer, ServerToHost};
+use protocol::signaling::{HostMode, HostToServer, JoinKind, ServerToHost};
 use protocol::{Stage, Timeouts};
 use transport::{Channel, Link, LinkError, Next, Opened, Peer, TransportError};
 
@@ -103,6 +103,11 @@ impl HostSession {
     }
 }
 
+/// host 등록 직후, 받아들일 접속 종류를 signaling 서버에 알린다.
+pub fn set_mode<L: Link<ServerToHost, HostToServer>>(link: &mut L, mode: HostMode) -> Result<(), LinkError> {
+    link.send(&HostToServer::Mode { mode })
+}
+
 /// `ViewerJoined` 를 기다려 viewer 하나를 끝까지 처리하고 돌아온다.
 /// `approve` 는 막히지 않는 질문 함수다: `None` 은 아직 답 없음, `Some(true/false)` 는 답.
 /// 허락을 기다리는 동안 host 는 peer 를 계속 poll 하며 약 50ms 마다 `approve` 를 부르고,
@@ -113,10 +118,21 @@ pub fn serve_next<L: Link<ServerToHost, HostToServer>>(
     state: &mut HostState,
     approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
 ) -> Result<ServeOutcome, HostError> {
-    // 앞 viewer 가 남긴 ViewerLeft, Relay 는 버린다.
-    while link.recv(cfg.timeouts.signaling_step)? != Some(ServerToHost::ViewerJoined) {}
+    // 앞 viewer 가 남긴 ViewerLeft, Relay 는 버린다(다른 번호이므로 어차피 무시되지만,
+    // ViewerJoined 가 아닌 메시지는 여기서 미리 건너뛴다).
+    let (n, kind) = loop {
+        if let Some(ServerToHost::ViewerJoined { n, kind }) = link.recv(cfg.timeouts.signaling_step)? {
+            break (n, kind);
+        }
+    };
 
-    attempt(link, cfg, state, approve)
+    // Task 7 전까지는 재접속을 받지 않는다: 쫓아내고 실패로 끝낸다.
+    if kind == JoinKind::Reconnect {
+        link.send(&HostToServer::Kick { n })?;
+        return Ok(ServeOutcome::Failed(AttemptFailure::Malformed));
+    }
+
+    attempt(link, cfg, state, approve, n)
 }
 
 fn attempt<L: Link<ServerToHost, HostToServer>>(
@@ -124,6 +140,7 @@ fn attempt<L: Link<ServerToHost, HostToServer>>(
     cfg: &HostConfig,
     state: &mut HostState,
     approve: &mut dyn FnMut(&ApprovalRequest) -> Option<bool>,
+    n: u64,
 ) -> Result<ServeOutcome, HostError> {
     use AttemptFailure as F;
     let t = &cfg.timeouts;
@@ -131,18 +148,18 @@ fn attempt<L: Link<ServerToHost, HostToServer>>(
     if let Err(wait) = state.limiter.check(Instant::now()) {
         // 올림: 남은 시간이 1ms 미만이어도 0 을 보내지 않는다.
         let ms = u64::try_from(wait.as_nanos().div_ceil(1_000_000)).unwrap_or(u64::MAX);
-        send_relay(link, &PakeMsg::RetryAfter { ms })?;
-        return kicked(link, F::WaitRequired);
+        send_relay(link, n, &PakeMsg::RetryAfter { ms })?;
+        return kicked(link, n, F::WaitRequired);
     }
 
-    let pa = match recv_relay(link, t.signaling_step)? {
+    let pa = match recv_relay(link, t.signaling_step, n)? {
         Relay::Msg(PakeMsg::Start { pa }) => pa,
-        Relay::Msg(_) | Relay::Malformed => return reject_relay(link, F::Malformed),
+        Relay::Msg(_) | Relay::Malformed => return reject_relay(link, n, F::Malformed),
         Relay::Left => return Ok(ServeOutcome::ViewerLeft),
-        Relay::TimedOut => return kicked(link, F::Timeout(Stage::Pake)),
+        Relay::TimedOut => return kicked(link, n, F::Timeout(Stage::Pake)),
     };
     let Ok((pake, pb, mac_b)) = HostPake::respond(&state.code, &cfg.host_id, &pa) else {
-        return reject_relay(link, F::Malformed);
+        return reject_relay(link, n, F::Malformed);
     };
 
     // Reply 를 보내기 전에 실패로 먼저 기록한다. 틀린 코드의 viewer 는 mac_b 로 알아채고
@@ -151,37 +168,37 @@ fn attempt<L: Link<ServerToHost, HostToServer>>(
     if state.limiter.record_failure(Instant::now()).rotate_code {
         state.code = OneTimeCode::generate();
     }
-    send_relay(link, &PakeMsg::Reply { pb, mac_b })?;
+    send_relay(link, n, &PakeMsg::Reply { pb, mac_b })?;
 
-    let (mac_a, sealed_offer) = match recv_relay(link, t.signaling_step)? {
+    let (mac_a, sealed_offer) = match recv_relay(link, t.signaling_step, n)? {
         Relay::Msg(PakeMsg::Confirm { mac_a, sealed_offer }) => (mac_a, sealed_offer),
-        Relay::Msg(_) | Relay::Malformed => return reject_relay(link, F::Malformed),
-        // 이미 떠난 viewer 에게는 Kick 하지 않는다. 그 사이 들어온 다음 viewer 가 대신 쫓겨난다.
-        Relay::Left => return Ok(ServeOutcome::Failed(F::NoConfirm)),
-        Relay::TimedOut => return kicked(link, F::NoConfirm),
+        Relay::Msg(_) | Relay::Malformed => return reject_relay(link, n, F::Malformed),
+        // 이제는 늦은 Kick 이 번호가 달라 서버가 버리므로, 떠난 viewer 에게도 항상 Kick 한다.
+        Relay::Left => return kicked(link, n, F::NoConfirm),
+        Relay::TimedOut => return kicked(link, n, F::NoConfirm),
     };
     let Ok(sk) = pake.confirm(&mac_a) else {
-        return reject_relay(link, F::WrongCode);
+        return reject_relay(link, n, F::WrongCode);
     };
     // 코드는 맞았다. 뒤에서 봉인 열기가 실패해도 초기화는 유지한다.
     state.limiter.record_success();
 
     let (mut sender, mut receiver) = sk.host_side();
     let Some(offer) = receiver.open(&sealed_offer).ok().and_then(|b| String::from_utf8(b).ok()) else {
-        return reject_relay(link, F::Malformed);
+        return reject_relay(link, n, F::Malformed);
     };
     let Ok(peer) = Peer::new(&cfg.bind_ips) else {
-        return kicked(link, F::Transport);
+        return kicked(link, n, F::Transport);
     };
     // 이 뒤로 실패해 돌아가면 `ch` 가 drop 되며 peer 를 닫는다.
     let mut ch = Channel::new(peer);
     let Ok(answer) = ch.peer().accept_offer(&offer) else {
-        return reject_relay(link, F::Malformed);
+        return reject_relay(link, n, F::Malformed);
     };
-    send_relay(link, &PakeMsg::Answer { sealed_answer: sender.seal(answer.as_bytes()) })?;
+    send_relay(link, n, &PakeMsg::Answer { sealed_answer: sender.seal(answer.as_bytes()) })?;
 
     match handshake(ch, cfg, state, &sk, approve) {
-        ServeOutcome::Failed(failure) => kicked(link, failure),
+        ServeOutcome::Failed(failure) => kicked(link, n, failure),
         other => Ok(other),
     }
 }
@@ -282,22 +299,25 @@ fn wait_approval(
     }
 }
 
-/// signaling 에 남아 있는 viewer 를 내보내고 실패로 끝낸다.
+/// signaling 에 남아 있는 viewer 를 내보내고 실패로 끝낸다. 늦게 도착하더라도 번호가
+/// 다음 viewer 와 다르므로 서버가 버린다.
 fn kicked<L: Link<ServerToHost, HostToServer>>(
     link: &mut L,
+    n: u64,
     failure: AttemptFailure,
 ) -> Result<ServeOutcome, HostError> {
-    link.send(&HostToServer::Kick)?;
+    link.send(&HostToServer::Kick { n })?;
     Ok(ServeOutcome::Failed(failure))
 }
 
 /// signaling 으로 `Rejected` 를 알린 뒤 Kick 한다.
 fn reject_relay<L: Link<ServerToHost, HostToServer>>(
     link: &mut L,
+    n: u64,
     failure: AttemptFailure,
 ) -> Result<ServeOutcome, HostError> {
-    send_relay(link, &PakeMsg::Rejected)?;
-    kicked(link, failure)
+    send_relay(link, n, &PakeMsg::Rejected)?;
+    kicked(link, n, failure)
 }
 
 /// data channel 로 거절을 알리고, viewer 가 받고 peer 를 닫을 때까지(최대 `linger`) poll 을 이어 간다.
@@ -310,8 +330,8 @@ fn reject_decision(mut ch: Channel, reason: RejectReason, failure: AttemptFailur
     ServeOutcome::Failed(failure)
 }
 
-fn send_relay<L: Link<ServerToHost, HostToServer>>(link: &mut L, msg: &PakeMsg) -> Result<(), LinkError> {
-    link.send(&HostToServer::Relay { data: hex::encode(pake_msg::encode(msg)) })
+fn send_relay<L: Link<ServerToHost, HostToServer>>(link: &mut L, n: u64, msg: &PakeMsg) -> Result<(), LinkError> {
+    link.send(&HostToServer::Relay { n, data: hex::encode(pake_msg::encode(msg)) })
 }
 
 enum Relay {
@@ -321,16 +341,28 @@ enum Relay {
     TimedOut,
 }
 
-fn recv_relay<L: Link<ServerToHost, HostToServer>>(link: &mut L, timeout: Duration) -> Result<Relay, LinkError> {
-    Ok(match link.recv(timeout)? {
-        Some(ServerToHost::Relay { data }) => match hex::decode(&data).ok().and_then(|b| pake_msg::decode(&b).ok()) {
-            Some(msg) => Relay::Msg(msg),
-            None => Relay::Malformed,
-        },
-        Some(ServerToHost::ViewerLeft) => Relay::Left,
-        // 시도 중에 올 수 없는 signaling 메시지.
-        Some(_) => Relay::Malformed,
-        None => Relay::TimedOut,
-    })
+/// 지금 처리 중인 viewer 번호 `n` 의 `Relay`/`ViewerLeft` 만 본다. 다른 번호(이전 viewer 가
+/// 남긴 것)는 조용히 버리고 계속 기다린다.
+fn recv_relay<L: Link<ServerToHost, HostToServer>>(link: &mut L, timeout: Duration, n: u64) -> Result<Relay, LinkError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(Relay::TimedOut);
+        }
+        return Ok(match link.recv(remaining)? {
+            Some(ServerToHost::Relay { n: rn, data }) if rn == n => {
+                match hex::decode(&data).ok().and_then(|b| pake_msg::decode(&b).ok()) {
+                    Some(msg) => Relay::Msg(msg),
+                    None => Relay::Malformed,
+                }
+            }
+            Some(ServerToHost::ViewerLeft { n: rn }) if rn == n => Relay::Left,
+            Some(ServerToHost::Relay { .. }) | Some(ServerToHost::ViewerLeft { .. }) => continue,
+            // 시도 중에 올 수 없는 signaling 메시지.
+            Some(_) => Relay::Malformed,
+            None => Relay::TimedOut,
+        });
+    }
 }
 

@@ -18,6 +18,9 @@ fn cfg(version: u32) -> HostConfig {
 type Seen = Arc<Mutex<Vec<ApprovalRequest>>>;
 fn spawn_host(mut link: impl Link<ServerToHost, HostToServer> + Send + 'static, cfg: HostConfig,
               mut state: HostState, allow: bool, seen: Seen) -> JoinHandle<(ServeOutcome, HostState, HostConfig)> {
+    // serve_next 전에 host 가 항상 모드를 알린다. 스레드를 나누기 전에 불러서, 이어지는
+    // hub.viewer(JoinKind::New) 가 이 모드를 못 보고 지나가는 경쟁을 없앤다.
+    set_mode(&mut link, HostMode::New).unwrap();
     thread::spawn(move || {
         let mut approve = |r: &ApprovalRequest| { seen.lock().unwrap().push(r.clone()); Some(allow) };
         let mut out = serve_next(&mut link, &cfg, &mut state, &mut approve).unwrap();
@@ -37,7 +40,7 @@ fn first_connection_succeeds_and_rotates_code() {
     let seen: Seen = Default::default();
     let h = spawn_host(host_link, cfg(PROTOCOL_VERSION), state, true, seen.clone());
     let vk = DeviceKeys::generate("노트북").unwrap();
-    let mut s = connect(hub.viewer(), HOST_ID, &code, &vk, &[LO], &Timeouts::default()).unwrap();
+    let mut s = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &code, &vk, &[LO], &Timeouts::default()).unwrap();
     assert!(s.ping(Duration::from_secs(2)).unwrap() < Duration::from_secs(1));
     let (out, state, cfg) = h.join().unwrap();
     assert!(matches!(out, ServeOutcome::Session(_)));
@@ -53,7 +56,7 @@ fn wrong_code_leaks_no_addresses() {
     let (hub, host_link) = FakeHub::new();
     let h = spawn_host(host_link, cfg(PROTOCOL_VERSION), HostState::new(), true, Default::default());
     let wrong = OneTimeCode::parse("000000").unwrap(); // generate() 가 000000 을 낼 확률은 무시
-    let r = connect(hub.viewer(), HOST_ID, &wrong, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    let r = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &wrong, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
     assert!(matches!(r, Err(ConnectError::WrongCode)));
     let (out, state, _) = h.join().unwrap();
     assert!(matches!(out, ServeOutcome::Failed(AttemptFailure::NoConfirm)));
@@ -67,10 +70,11 @@ fn retry_after_during_backoff() {
     let (c, mut state) = (cfg(PROTOCOL_VERSION), HostState::new());
     let wrong = OneTimeCode::parse("000000").unwrap();
     let vk = DeviceKeys::generate("v").unwrap();
+    set_mode(&mut host_link, HostMode::New).unwrap();
     let hub2 = hub.clone();
     let v = thread::spawn(move || {
-        let first = connect(hub2.viewer(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
-        let second = connect(hub2.viewer(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
+        let first = connect(hub2.viewer(JoinKind::New).unwrap(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
+        let second = connect(hub2.viewer(JoinKind::New).unwrap(), HOST_ID, &wrong, &vk, &[LO], &Timeouts::default());
         (first, second)
     });
     let mut deny = |_: &ApprovalRequest| Some(false);
@@ -91,7 +95,7 @@ fn approval_denied_keeps_code() {
     let state = HostState::new();
     let code = state.code.clone();
     let h = spawn_host(host_link, cfg(PROTOCOL_VERSION), state, false, Default::default());
-    let r = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    let r = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
     assert!(matches!(r, Err(ConnectError::Rejected(RejectReason::Denied))));
     let (out, state, _) = h.join().unwrap();
     assert!(matches!(out, ServeOutcome::Failed(AttemptFailure::Denied)));
@@ -104,7 +108,7 @@ fn version_mismatch_reports_older_side() {
     let state = HostState::new();
     let code = state.code.clone();
     let _h = spawn_host(host_link, cfg(PROTOCOL_VERSION + 1), state, true, Default::default());
-    let r = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    let r = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
     assert!(matches!(r, Err(ConnectError::VersionMismatch { older: Side::Viewer, .. })));
 }
 
@@ -112,12 +116,17 @@ fn version_mismatch_reports_older_side() {
 fn host_leaves_mid_handshake() {
     let (hub, mut host_link) = FakeHub::new();
     let h = thread::spawn(move || {
-        assert_eq!(host_link.recv(Duration::from_secs(5)).unwrap(), Some(ServerToHost::ViewerJoined));
+        assert_eq!(
+            host_link.recv(Duration::from_secs(5)).unwrap(),
+            Some(ServerToHost::ViewerJoined { n: 1, kind: JoinKind::Reconnect })
+        );
         assert!(matches!(host_link.recv(Duration::from_secs(5)).unwrap(), Some(ServerToHost::Relay { .. })));
         drop(host_link); // Start 를 받고 사라짐
     });
     let start = Instant::now();
-    let r = connect(hub.viewer(), HOST_ID, &OneTimeCode::generate(), &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    // 이 테스트는 session.rs 를 거치지 않고 signaling 메시지만 직접 보므로, 모드 설정 없이
+    // 항상 허용되는 kind::Reconnect 를 쓴다.
+    let r = connect(hub.viewer(JoinKind::Reconnect).unwrap(), HOST_ID, &OneTimeCode::generate(), &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
     h.join().unwrap();
     assert!(matches!(r, Err(ConnectError::HostLeft)));
     assert!(start.elapsed() < Timeouts::default().signaling_step);
@@ -129,7 +138,7 @@ fn garbage_confirm_counts_as_failure() {
     let state = HostState::new();
     let code = state.code.clone();
     let h = spawn_host(host_link, cfg(PROTOCOL_VERSION), state, true, Default::default());
-    let mut v = hub.viewer();
+    let mut v = hub.viewer(JoinKind::New).unwrap();
     assert_eq!(v.recv(Duration::from_secs(5)).unwrap(), Some(ServerToViewer::Joined));
     let (_vp, pa) = ViewerPake::start(&code, HOST_ID).unwrap();
     v.send(&ViewerToServer::Relay { data: hex::encode(pake_msg::encode(&PakeMsg::Start { pa })) }).unwrap();
@@ -148,12 +157,13 @@ fn approval_times_out_as_no_response() {
     c.timeouts.approval = Duration::from_secs(1);
     let mut state = HostState::new();
     let code = state.code.clone();
+    set_mode(&mut host_link, HostMode::New).unwrap();
     let h = thread::spawn(move || {
         let mut never = |_: &ApprovalRequest| None;
         let out = serve_next(&mut host_link, &c, &mut state, &mut never).unwrap();
         (out, state)
     });
-    let r = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
+    let r = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default());
     assert!(matches!(r, Err(ConnectError::Rejected(RejectReason::NoResponse))));
     let (out, state) = h.join().unwrap();
     assert!(matches!(out, ServeOutcome::Failed(AttemptFailure::Denied)));
@@ -166,6 +176,7 @@ fn slow_approval_keeps_connection() {
     let c = cfg(PROTOCOL_VERSION);
     let mut state = HostState::new();
     let code = state.code.clone();
+    set_mode(&mut host_link, HostMode::New).unwrap();
     let h = thread::spawn(move || {
         let mut first_call: Option<Instant> = None;
         let mut slow = |_: &ApprovalRequest| {
@@ -176,7 +187,7 @@ fn slow_approval_keeps_connection() {
         if let ServeOutcome::Session(s) = &mut out { s.serve_pings(Duration::from_secs(3)).unwrap(); }
         out
     });
-    let mut s = connect(hub.viewer(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default()).unwrap();
+    let mut s = connect(hub.viewer(JoinKind::New).unwrap(), HOST_ID, &code, &DeviceKeys::generate("v").unwrap(), &[LO], &Timeouts::default()).unwrap();
     assert!(s.ping(Duration::from_secs(2)).unwrap() < Duration::from_secs(2));
     assert!(matches!(h.join().unwrap(), ServeOutcome::Session(_)));
 }

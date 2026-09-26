@@ -150,7 +150,10 @@ fn re_registration_uses_id_path_and_rejects_other_challenge_id() {
 
 #[test]
 fn unexpected_first_message_is_rejected() {
-    assert_protocol_error_without_auth(vec![Step::Send(r#"{"t":"viewer_joined"}"#.into())], None);
+    assert_protocol_error_without_auth(
+        vec![Step::Send(r#"{"t":"viewer_joined","n":1,"kind":"new"}"#.into())],
+        None,
+    );
 }
 
 #[test]

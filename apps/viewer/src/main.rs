@@ -64,8 +64,8 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &Args, code: &OneTimeCode, keys: &DeviceKeys) -> Result<(), ConnectError> {
-    let link: WsLink<ServerToViewer, ViewerToServer> =
-        WsLink::connect(&format!("{}/v1/viewer/{}", args.server, args.id)).map_err(ConnectError::from_join_error)?;
+    let link: WsLink<ServerToViewer, ViewerToServer> = WsLink::connect(&format!("{}/v1/viewer/{}?kind=new", args.server, args.id))
+        .map_err(ConnectError::from_join_error)?;
     let mut bind_ips = transport::local_ips();
     if bind_ips.is_empty() {
         bind_ips.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
