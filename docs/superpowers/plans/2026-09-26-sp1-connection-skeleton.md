@@ -211,7 +211,7 @@ fn signaling_json_shapes() {
   - `auth::key_fingerprint(key: &[u8; 32]) -> String`: SHA-256 앞 8 byte 를 4자리 hex 묶음 4개로 (`"a1b2 c3d4 e5f6 0718"`). 허락 질문과 로그에 쓰는 표시용.
 - 서명 규칙 (정확한 byte):
   - 재접속 key 묶음: `reconnect_key_sig = Sign(device, b"simple-remote reconnect key v1" || reconnect_public)`. X25519 재접속 key 는 이번 계획에서 교환만 하고 쓰지 않는다 (D26, 다음 계획의 Noise KK 가 쓴다).
-  - 세션 서명: `session_sig = Sign(device, b"simple-remote hello v1" || [role.byte()] || binding || u16_be(own_fp.len()) || own_fp || u16_be(peer_fp.len()) || peer_fp)`. `binding` 은 Task 3 `SessionKeys::hello_binding` 이고 fp 는 DTLS 인증서 지문 byte (Task 6 `Peer::local_fingerprint`/`remote_fingerprint`).
+  - 세션 서명: `session_sig = Sign(device, b"simple-remote hello v1" || [role.byte()] || binding || u16_be(own_fp.len()) || own_fp || u16_be(peer_fp.len()) || peer_fp || u16_be(name.len()) || name(UTF-8))`. 기기 이름은 허락 창에 보이므로 서명에 넣어 바꿔치기를 막는다. `binding` 은 Task 3 `SessionKeys::hello_binding` 이고 fp 는 DTLS 인증서 지문 byte (Task 6 `Peer::local_fingerprint`/`remote_fingerprint`).
   - 확인은 `VerifyingKey::verify_strict`. 길이가 틀린 key·서명은 `Malformed`.
 
 - [ ] **Step 1: 실패하는 테스트 작성** — `identity.rs` 의 tests:
