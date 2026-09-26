@@ -24,3 +24,6 @@ postcard = { workspace = true }
 
 [dev-dependencies]
 pakery-spake2 = { workspace = true, features = ["test-utils"] }
+
+[features]
+insecure-dev-store = []

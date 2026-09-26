@@ -6,6 +6,7 @@ mod permit;
 mod reconnect;
 mod rng;
 mod sealed;
+mod store;
 
 pub use code::OneTimeCode;
 pub use error::AuthError;
@@ -17,3 +18,6 @@ pub use permit::{
 pub use reconnect::{HostReconnect, NoiseChannel, ReconnectSession, ViewerReconnect};
 pub use rng::rng;
 pub use sealed::{SealedReceiver, SealedSender};
+#[cfg(any(test, feature = "insecure-dev-store"))]
+pub use store::DevPlaintextProtector;
+pub use store::{Protector, StateFile, StoreError};
