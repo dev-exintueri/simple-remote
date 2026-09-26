@@ -1,7 +1,9 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use protocol::PROTOCOL_VERSION;
 use protocol::control::Hello;
+use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::AuthError;
 use crate::rng::rng;
@@ -42,7 +44,7 @@ impl std::fmt::Debug for DeviceKeys {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerIdentity {
     pub device_key: [u8; 32],
     pub name: String,
@@ -58,6 +60,44 @@ impl DeviceKeys {
             reconnect_secret: StaticSecret::random_from_rng(&mut rng()),
             name: name.to_string(),
         })
+    }
+
+    /// 저장용 개인 key bytes. postcard(`{ name, signing, reconnect }`).
+    /// 호출자는 이 bytes 를 암호화해 저장해야 한다.
+    pub fn to_secret_bytes(&self) -> Zeroizing<Vec<u8>> {
+        let secret = SecretFile {
+            name: self.name.clone(),
+            signing: self.signing_key.to_bytes(),
+            reconnect: self.reconnect_secret.to_bytes(),
+        };
+        // 크기를 미리 잡아 두어 postcard 가 버퍼를 다시 잡으며 사본을 남기지 않게 한다.
+        let mut buf = Zeroizing::new(vec![0u8; SECRET_BYTES_MAX]);
+        let len = postcard::to_slice(&secret, &mut buf)
+            .expect("이름이 64 byte 이하이므로 SECRET_BYTES_MAX 안에 들어간다")
+            .len();
+        buf.truncate(len);
+        buf
+    }
+
+    /// [`DeviceKeys::to_secret_bytes`] 의 역. 해독에 실패하거나 bytes 가 남으면
+    /// `Malformed("device keys")`. 이름 규칙은 [`check_device_name`] 을 다시 적용한다.
+    pub fn from_secret_bytes(bytes: &[u8]) -> Result<DeviceKeys, AuthError> {
+        let (secret, rest) = postcard::take_from_bytes::<SecretFile>(bytes)
+            .map_err(|_| AuthError::Malformed("device keys"))?;
+        if !rest.is_empty() {
+            return Err(AuthError::Malformed("device keys"));
+        }
+        check_device_name(&secret.name)?;
+        Ok(DeviceKeys {
+            signing_key: SigningKey::from_bytes(&secret.signing),
+            reconnect_secret: StaticSecret::from(secret.reconnect),
+            name: secret.name.clone(),
+        })
+    }
+
+    /// 재접속 X25519 개인 key bytes. Noise handshake 를 만들 때만 쓴다.
+    pub(crate) fn reconnect_secret_bytes(&self) -> Zeroizing<[u8; 32]> {
+        Zeroizing::new(self.reconnect_secret.to_bytes())
     }
 
     pub fn name(&self) -> &str {
@@ -94,6 +134,24 @@ impl DeviceKeys {
             reconnect_key_sig: reconnect_key_sig.to_vec(),
             session_sig: session_sig.to_vec(),
         }
+    }
+}
+
+/// 이름 길이 varint 1 byte + 이름 64 byte + key 32 byte 두 개.
+const SECRET_BYTES_MAX: usize = 1 + NAME_MAX_BYTES + 32 + 32;
+
+/// 저장용 직렬화 형태. drop 시 개인 key bytes 를 지운다.
+#[derive(Serialize, Deserialize)]
+struct SecretFile {
+    name: String,
+    signing: [u8; 32],
+    reconnect: [u8; 32],
+}
+
+impl Drop for SecretFile {
+    fn drop(&mut self) {
+        self.signing.zeroize();
+        self.reconnect.zeroize();
     }
 }
 
@@ -284,6 +342,37 @@ mod tests {
                 "{name:?}"
             );
         }
+    }
+
+    #[test]
+    fn secret_bytes_roundtrip() {
+        let k = DeviceKeys::generate("엄마 컴퓨터").unwrap();
+        let bytes = k.to_secret_bytes();
+        let r = DeviceKeys::from_secret_bytes(&bytes).unwrap();
+        assert_eq!(r.device_public(), k.device_public());
+        assert_eq!(r.reconnect_public(), k.reconnect_public());
+        assert_eq!(r.name(), k.name());
+        let sig = Signature::from_bytes(&r.sign_raw(b"msg"));
+        let vk = VerifyingKey::from_bytes(&k.device_public()).unwrap();
+        assert!(vk.verify_strict(b"msg", &sig).is_ok());
+    }
+
+    #[test]
+    fn corrupt_secret_bytes_rejected() {
+        let k = DeviceKeys::generate("x").unwrap();
+        let bytes = k.to_secret_bytes();
+        assert!(matches!(
+            DeviceKeys::from_secret_bytes(&bytes[..bytes.len() - 1]),
+            Err(AuthError::Malformed("device keys"))
+        ));
+        assert!(matches!(DeviceKeys::from_secret_bytes(&[]), Err(AuthError::Malformed("device keys"))));
+    }
+
+    #[test]
+    fn peer_identity_serde_roundtrip() {
+        let p = PeerIdentity { device_key: [1; 32], name: "n".into(), reconnect_key: [2; 32] };
+        let b = postcard::to_stdvec(&p).unwrap();
+        assert_eq!(postcard::from_bytes::<PeerIdentity>(&b).unwrap(), p);
     }
 
     #[test]
