@@ -11,7 +11,7 @@
   - 클라우드 세션: Task 0~9, 13 (PR #1, #2).
   - 로컬 Windows 세션 (사용자 개인 PC: Windows 11 Pro 26200, RTX 3060 Ti, 3840x2160 모니터 1대 배율 150%, IPv6 없음): Task 10, 11, 12, T6 전역 IPv6, Task 14. 작업 브랜치 `sp1-phase0-windows` → PR → `develop`.
   - Task 14 의 spec 반영 변경 S1~S9 를 사용자가 전부 승인했고 spec 과 결정 기록 D25~D32 에 반영했다.
-- **다음 할 일: 다음 구현 계획(무엇을 먼저 쓸지) 사용자 결정 대기.** 아래 "다음 할 일" 절 참고.
+- **다음 구현 계획 작성됨, 사용자 검토 대기**: `docs/superpowers/plans/2026-09-26-sp1-connection-skeleton.md` ("연결 뼈대", 사용자가 추천안 선택). 작업 브랜치 `sp1-connection-plan`.
 
 ### 로컬 Windows 세션 기록 (Phase 0 남은 task, 끝남)
 
@@ -288,7 +288,13 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
 ## 다음 할 일
 
 - Phase 0 끝. spike 결과를 입력으로 다음 구현 계획을 쓴다. 계획 분할 방침(순차 계획 여러 개)은 유지한다.
-- **사람 결정 필요: 어느 부분 계획을 먼저 쓸지.** 에이전트 추천(사용자 답 대기): "연결 뼈대" 계획. Rust workspace + `crates/auth`(PAKE, Noise KK, 기기 key) + `signaling/`(Workers) + `crates/transport`(str0m, socket·timer 루프) 로, 영상 없이 두 기기가 signaling → PAKE → 암호화 SDP 교환 → 직접 연결 → data channel 왕복까지 끝까지 동작하게 한다. 근거: spec 의 보안 경로(5절)가 모든 기능의 전제이고, 라이브러리가 모두 확정됐으며(D23, D25, D26), Linux 에서 가짜 네트워크로 자동 테스트할 수 있어 사람 PC 없이 진행된다. 화면·입력(Windows 전용)은 그 위에 다음 계획으로 올린다.
+- 사용자가 "연결 뼈대" 계획을 먼저 쓰기로 정했고(추천안 "진행"), 계획을 작성했다: `docs/superpowers/plans/2026-09-26-sp1-connection-skeleton.md`. 사용자 검토와 실행 방식 선택을 기다린다. 계획 작성 중 정한 것:
+  - 범위에서 재접속 허가증·Noise KK·기기 key 저장·STUN·경로 기록·순단 대비·host-ui 는 빼고 다음 계획으로 (첫 연결에 필요 없음).
+  - host 는 PAKE 응답(`Reply`)을 보내기 전에 실패를 먼저 기록하고, 올바른 확인 MAC 을 받을 때만 성공으로 초기화한다. 틀린 코드의 viewer 는 host MAC 으로 먼저 알고 조용히 떠날 수 있어서, 확인 MAC 이 올 때 기록하면 대기 시간 없이 추측할 수 있기 때문이다 (spec 5.5 를 지키는 구현 방식).
+  - API·버전 확인 결과 (에이전트 조사): 최신 ed25519/x25519/pakery 는 `rand_core` 0.10 세대라 난수는 `UnwrapErr(getrandom::SysRng)` 하나로 통일, `hkdf` 0.13 은 `sha2` 0.11 과만 맞음, `tungstenite` 0.30 의 `wss://` 는 rustls crypto provider(ring)를 따로 켜야 panic 이 안 남, str0m 0.23.1 은 DTLS 지문 불일치 시 `poll_output` 오류로 연결을 끊음(기본 켜짐), Workers 는 표준 `"Ed25519"` 지원, Free plan 은 SQLite DO 만, WebSocket 테스트 파일이 여러 개면 vitest `--max-workers=1 --no-isolate`.
+  - spec 보완 후보 (다음 spec 반영 때): Workers WebSocket 과금 "메시지 20개 = 요청 1건" 은 받는 메시지에만 해당.
+  - 실행 환경: 이 Windows PC 에는 Rust·Node 가 없다. 실행은 WSL(Rust 1.88 → 1.95 업데이트 필요, Node 24) 또는 클라우드 세션에서 한다.
+- (지난 기록) 에이전트 추천: "연결 뼈대" 계획. Rust workspace + `crates/auth`(PAKE, Noise KK, 기기 key) + `signaling/`(Workers) + `crates/transport`(str0m, socket·timer 루프) 로, 영상 없이 두 기기가 signaling → PAKE → 암호화 SDP 교환 → 직접 연결 → data channel 왕복까지 끝까지 동작하게 한다. 근거: spec 의 보안 경로(5절)가 모든 기능의 전제이고, 라이브러리가 모두 확정됐으며(D23, D25, D26), Linux 에서 가짜 네트워크로 자동 테스트할 수 있어 사람 PC 없이 진행된다. 화면·입력(Windows 전용)은 그 위에 다음 계획으로 올린다.
 - 계획을 쓸 때는 CLAUDE.md "작업 절차"의 계획 형식을 따르고, 결과 문서 "제품 계획에 넣을 사항"(T4, T7, T11, T13)을 해당 task 로 옮긴다.
 
 ### 지난 기록 (계획 작성 전 로컬 세션)
