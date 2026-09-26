@@ -43,6 +43,26 @@ describe("viewer and relay", () => {
 		expect(await next.next()).toEqual({ t: "joined" });
 	});
 
+	it("relay_from_kicked_viewer_never_reaches_host", async () => {
+		const { host, viewer, id } = await pair();
+		host.send({ t: "kick" });
+		// Sent before the client has seen the server's close frame: the server has
+		// already closed this socket when the message is handled.
+		viewer.send({ t: "relay", data: "a1" });
+		expect(await viewer.closeCode()).toBe(4001);
+		try {
+			viewer.send({ t: "relay", data: "a2" });
+		} catch {
+			// the runtime may refuse sends on a closed socket
+		}
+		const next = await connect(`/v1/viewer/${id}`, freshIp());
+		expect(await next.next()).toEqual({ t: "joined" });
+		expect(await host.next()).toEqual({ t: "viewer_joined" });
+		next.send({ t: "relay", data: "b1" });
+		expect(await host.next()).toEqual({ t: "relay", data: "b1" });
+		expect(await host.silentFor(200)).toBe(true);
+	});
+
 	it("host_close_sends_host_left", async () => {
 		const { host, viewer } = await pair();
 		host.ws.close(1000, "bye");

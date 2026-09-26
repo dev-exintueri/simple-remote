@@ -69,6 +69,10 @@ export class HostRoom extends DurableObject<Env> {
 
 		if (this.ctx.getTags(ws).includes("host")) return this.onHostMessage(ws, msg);
 
+		// A socket the server already closed (kick, host left) or that is no longer the open
+		// viewer may still deliver frames sent before its client saw the close. Drop them so
+		// they never reach the host as traffic of the next viewer.
+		if (ws !== this.openViewer()) return;
 		if (msg.t === "relay" && typeof msg.data === "string") {
 			this.authedHost()?.send(JSON.stringify({ t: "relay", data: msg.data }));
 			return;
