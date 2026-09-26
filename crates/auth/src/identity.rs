@@ -50,11 +50,9 @@ pub struct PeerIdentity {
 }
 
 impl DeviceKeys {
-    /// `name` 은 1~64 byte UTF-8 이어야 한다 (설계 제안값).
+    /// `name` 은 1~64 byte UTF-8 이고 제어 문자가 없어야 한다 ([`check_device_name`]).
     pub fn generate(name: &str) -> Result<DeviceKeys, AuthError> {
-        if name.is_empty() || name.len() > NAME_MAX_BYTES {
-            return Err(AuthError::NameTooLong);
-        }
+        check_device_name(name)?;
         Ok(DeviceKeys {
             signing_key: SigningKey::generate(&mut rng()),
             reconnect_secret: StaticSecret::random_from_rng(&mut rng()),
@@ -97,6 +95,19 @@ impl DeviceKeys {
             session_sig: session_sig.to_vec(),
         }
     }
+}
+
+/// 기기 이름은 허락 질문에 그대로 보이므로 보내는 쪽과 받는 쪽 모두 같은 규칙으로 막는다.
+/// 1~64 byte (설계 제안값) 가 아니면 `NameTooLong`, 줄바꿈이나 terminal escape 같은
+/// 제어 문자(`char::is_control`)가 있으면 `Malformed("device_name")`.
+fn check_device_name(name: &str) -> Result<(), AuthError> {
+    if name.is_empty() || name.len() > NAME_MAX_BYTES {
+        return Err(AuthError::NameTooLong);
+    }
+    if name.chars().any(char::is_control) {
+        return Err(AuthError::Malformed("device_name"));
+    }
+    Ok(())
 }
 
 fn session_message(role: Role, binding: &[u8; 32], own_fp: &[u8], peer_fp: &[u8], name: &[u8]) -> Vec<u8> {
@@ -145,6 +156,7 @@ pub fn verify_hello(
         .as_slice()
         .try_into()
         .map_err(|_| AuthError::Malformed("session_sig"))?;
+    check_device_name(&hello.device_name)?;
 
     let verifying_key =
         VerifyingKey::from_bytes(&device_key).map_err(|_| AuthError::Malformed("device_key"))?;
@@ -229,6 +241,51 @@ mod tests {
             Err(AuthError::Malformed(_))
         ));
     }
+    /// `generate` 를 거치지 않고 아무 이름으로 올바르게 서명한 Hello 를 만든다
+    /// (이름 검사를 우회하는 상대를 흉내 냄).
+    fn hello_signed_with_name(name: &str, b: &[u8; 32], vfp: &[u8], hfp: &[u8]) -> Hello {
+        let mut k = DeviceKeys::generate("x").unwrap();
+        k.name = name.to_string();
+        k.make_hello(Role::Viewer, b, vfp, hfp)
+    }
+
+    #[test]
+    fn hello_rejects_bad_device_names_even_when_signed() {
+        let (_, b, vfp, hfp) = setup();
+        for name in ["줄\n바꿈", "\u{1b}[2J", "탭\t", "\u{7f}"] {
+            let h = hello_signed_with_name(name, &b, &vfp, &hfp);
+            assert!(
+                matches!(
+                    verify_hello(&h, Role::Viewer, &b, &vfp, &hfp),
+                    Err(AuthError::Malformed("device_name"))
+                ),
+                "제어 문자가 든 이름은 거절돼야 한다: {name:?}"
+            );
+        }
+        for name in ["", &"a".repeat(65)] {
+            let h = hello_signed_with_name(name, &b, &vfp, &hfp);
+            assert!(
+                matches!(verify_hello(&h, Role::Viewer, &b, &vfp, &hfp), Err(AuthError::NameTooLong)),
+                "길이가 1~64 byte 가 아닌 이름은 거절돼야 한다: {} byte",
+                name.len()
+            );
+        }
+        let ok = hello_signed_with_name(&"a".repeat(64), &b, &vfp, &hfp);
+        assert!(verify_hello(&ok, Role::Viewer, &b, &vfp, &hfp).is_ok());
+        let korean = hello_signed_with_name("엄마 컴퓨터", &b, &vfp, &hfp);
+        assert_eq!(verify_hello(&korean, Role::Viewer, &b, &vfp, &hfp).unwrap().name, "엄마 컴퓨터");
+    }
+
+    #[test]
+    fn generate_rejects_control_characters() {
+        for name in ["a\nb", "\u{1b}[2J", "\r"] {
+            assert!(
+                matches!(DeviceKeys::generate(name), Err(AuthError::Malformed("device_name"))),
+                "{name:?}"
+            );
+        }
+    }
+
     #[test]
     fn name_limits_and_fingerprint_format() {
         assert!(matches!(
