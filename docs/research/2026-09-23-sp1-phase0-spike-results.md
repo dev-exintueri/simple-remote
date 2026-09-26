@@ -111,6 +111,8 @@
   - IPv6: `RESULT ip=::1 ok=true ms=484` (실제 UDP socket, str0m).
 - 클라우드 확인: 이 클라우드 컨테이너는 IPv6 가 없어 `::1` bind 가 `Address family not supported` 로 실패한다. 대신 `127.0.0.1` 로 `ok=true ms=213` 을 확인했다 (계획 2단계의 기대값과 다른 점).
 - 판정: **Actions 부분 통과**. 사람 PC 의 전역 IPv6 주소 확인은 H1 답을 받은 뒤 한다.
+- 사람 PC (Windows 11 Pro 26200): `ipconfig` 에 IPv6 줄이 없고 `Get-NetIPAddress -AddressFamily IPv6` 에 2 또는 3 으로 시작하는 주소가 없다. 계획 기준대로 **IPv6 없음**으로 기록하고 판정에서 뺀다. 전역 IPv6 UDP 연결은 IPv6 가 있는 회선에서 제품 단계의 연결 시험 때 다시 확인한다.
+- 최종 판정: **통과** (Windows 빌드, Linux 와 같은 테스트 결과, `::1` 연결. 전역 IPv6 는 환경이 없어 제외).
 - 계획과 다르게 바꾼 점: webrtc-rs 테스트 step 은 `bwe` 가 Linux 에서 이미 실패로 판정되어 `--no-fail-fast` + `continue-on-error` 로 돌렸다.
 - 사용량: 이 job 은 12분 41초 (Windows 차감 약 26분). 대부분 cache 없는 Rust 빌드 시간이다.
 
@@ -206,6 +208,31 @@ target_x,target_y,formula,nx,ny,got_x,got_y,dx,dy
   - `H.264 encoders: 1` 목록에 NVIDIA 가 없는 것은 `MFTEnumEx` 가 `MFT_ENUM_FLAG_HARDWARE` 없이는 하드웨어 MFT 를 돌려주지 않기 때문이다. 하드웨어 선택은 이 flag 로 따로 열거한다.
 - 실행 중 겪은 문제: 처음 SYSTEM 실행에서 "액세스 거부"가 났고 `PSEXESVC` 서비스 설치 기록(System 로그 7045)이 없었다. 관리자 권한 창(`whoami /groups` 에서 `High Mandatory Level`)에서 다시 실행해 해결했다. PsExec 출력은 두 번 모두 `cmd exited on DESKTOP-0R38C2A with error code 0.` `IsInRole('Administrators')` 문자열 검사는 이 PC 에서 관리자 창인데도 `False` 를 돌려줘 권한 확인에 쓸 수 없었다.
 ## T12 egui
+
+- 질문: (1) 1920x1080 영상 texture 를 30fps 로 갱신할 때 한 프레임 처리 시간과 `set`/`set_partial` 차이 (2) Windows 기본 한국어 IME 로 한글 조합·확정·조합 중 백스페이스가 정상인가 (3) 배율이 바뀌면 `pixels_per_point` 가 따라가고 글자가 선명한가
+- 실행: 사람 PC (Windows 11 Pro 26200, RTX 3060 Ti, 3840x2160 모니터 1대, Microsoft 한국어 IME 두벌식). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592235 (windows-egui, commit `d1a566f`) 의 artifact `win-egui`. 측정값은 에이전트가 창을 화면 캡처해서 읽었다.
+- (1) 성능 (배율 150%, 창 약 1290x830 point, "pace video at 30 fps" 켬)
+
+| 업로드 방식 | paints/s | cpu_usage avg / p95 / max (ms) | ui() p95 (ms) | convert p95 (ms) |
+|---|---|---|---|---|
+| `set_partial` (시작 후 약 20초) | 57 | 3.31 / 6.68 / 9.09 | 5.03 | 3.79 |
+| `set_partial` (시작 후 약 30초) | 60 | 2.89 / 5.61 / 8.32 | 3.68 | 2.46 |
+| `set_partial` (약 8분 연속) | 58 | 3.07 / 7.17 / 9.06 | 4.64 | 3.35 |
+| `set` | 61 | 3.01 / 6.70 / 8.42 | 3.99 | 2.79 |
+| `set` (배율 125%, 창 최대화) | 60 | 2.79 / 5.50 / 6.66 | 3.43 | 2.32 |
+
+  - `upload` 는 모든 경우 avg 0.00 ms 다. `set`/`set_partial` 호출은 변경을 기록만 하고 실제 GPU 전송은 render 단계에서 일어나 `cpu_usage` 에 포함된다. 이 PC 에서는 두 방식의 차이가 측정 흔들림보다 작다.
+  - `paints/s` 57~61 은 모니터 60Hz vsync 에 맞춘 화면 갱신 수다. 영상 프레임 수(`video frames`)는 30fps pacing 으로 늘었다.
+- (2) 한글 IME: 사람 입력 1회 + 자동 입력 1회.
+  - 사람 입력: 두 칸 모두 `원격 지원 테스트 한글 입력 확인` 이 그대로 들어갔고 이벤트는 `Preedit("ㄹ") → ("려") → ("력") → Preedit("") + Commit("력")` 흐름.
+  - 자동 입력 (`spikes/egui-ime-auto/ime.ps1`, 계획 밖, 사용자 요청): `SendInput` 으로 두벌식 키를 넣어 IME 를 거치게 하고 단계마다 창을 캡처했다. `d n j` 뒤 칸에 조합 중 "워" 가 강조 표시로 보임 (`Preedit("ㅇ") → ("우") → ("워")`). 백스페이스 한 번 뒤 `Preedit("우")` 와 칸에 "우" (자모 하나만 지움). 이어서 `j s` 로 "원". 백스페이스는 IME 가 소비해 egui `Key` 이벤트로 오지 않았다 (egui 가 글자를 한 번 더 지우지 않음). 최종 두 칸 모두 `원격 지원 테스트 한글 입력 확인`.
+  - 자동 입력에서 알게 된 것: `ImmGetDefaultIMEWnd` + `IMC_GETCONVERSIONMODE` 로 읽은 모드 값(9)은 실제 한/영 상태와 맞지 않았다 (영문 상태인데 NATIVE 비트가 켜짐). IME 상태 확인은 결과 캡처로 했다.
+- (3) DPI: 모니터가 1대라 계획대로 설정에서 배율을 바꿨다. 150% 에서 `pixels_per_point 1.500 native Some(1.5)`, 실행 중 125% 로 바꾸자 `pixels_per_point 1.250 native Some(1.25)` 이고 창의 물리 크기도 1942x1256 에서 1618x1047 로 같은 비율로 줄었다. 캡처에서 글자가 선명했다.
+- 판정
+  - (1) **통과**: `paints/s` 29 이상, `set_partial` 의 `cpu_usage` p95 5.61~7.17 ms (기준 16 ms 이하).
+  - (2) **통과**.
+  - (3) **부분**: 배율 변경은 따라가지만, 배율이 다른 두 모니터 사이의 창 이동은 확인하지 못했다.
+- 제품 설계에 줄 것: 한글 글꼴은 `C:\Windows\Fonts\malgun.ttf` 를 `FontPriority::Lowest` 로 넣어 동작했다. 입력 칸 테스트 자동화는 `SendInput` 키 입력 + 화면 캡처로 가능하다.
 ## T13 WiX MSI
 
 - 질문: WiX 7 로 spec 7.1 구성의 MSI 를 만들 수 있나? 설치 후 실제 상태가 선언과 같나? 비정상 종료 뒤 재시작되나? 제거 뒤 흔적이 없나?
