@@ -164,6 +164,27 @@
 - Task 11 (사람 PC) 에서도 PsExec 출력이 비면 같은 방식(`cmd /c ... > 파일`)으로 받는다.
 
 ## T10 SendInput 절대 좌표
+
+- 질문: physical pixel 좌표를 0..65535 로 바꾸는 공식 A `((x - vx) * 65535) / (vw - 1)` 와 공식 B `((x - vx) * 65536 + vw / 2) / vw` 중 어느 것이 커서를 정확한 픽셀에 놓나?
+- 기준: 통과 = 한 공식이 불일치 0건. 두 공식 다 불일치가 있으면 실패. 모니터가 1개거나 배율이 모두 같으면 "부분".
+- 실행: 사람 PC (Windows 11 Pro 26200, RTX 3060 Ti, LG UltraFine 1대 3840x2160 배율 150%). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592237 (windows-probes, commit `d1a566f`) 의 artifact `win-probes`.
+- 출력 요약: `virtual_desktop origin=(0,0) size=(3840x2160)`, `monitor[0] rect=(0,0)-(3840,2160)`, `points=11 formulaA_mismatches=1 formulaB_mismatches=2`.
+- 불일치 행 (CSV 원문, 나머지 19행은 `dx=0, dy=0`)
+
+```
+target_x,target_y,formula,nx,ny,got_x,got_y,dx,dy
+1,1,A,17,30,0,0,-1,-1
+1,1,B,17,30,0,0,-1,-1
+3838,2158,B,65502,65475,3838,2157,0,-1
+```
+
+- 분석: 22행 모두 "Windows 가 픽셀을 `floor(n * vw / 65536)` 로 정한다"는 가정과 맞는다. 예: `n=17` → `17*3840/65536 = 0.996` → 0, `n=65475` → `65475*2160/65536 = 2157.99` → 2157. 이 가정에서 목표 픽셀 x 에 정확히 떨어지는 최소 값은 `ceil((x - vx) * 65536 / vw)` 이다 (공식 C: `((x - vx) * 65536 + vw - 1) / vw`). 공식 A 는 1 근처처럼 작은 좌표에서 모자라고, 공식 B 는 반올림이라 절반 확률로 모자란다. 공식 C 는 이 PC 에서 아직 실행해 보지 않은 추론이다. Microsoft 문서는 변환 규칙을 밝히지 않는다.
+- 추가 검사 (계획 밖, 사용자 승인): 공식 C 를 확인하려고 `spikes/sendinput-sweep/sweep.ps1` 을 만들었다. 같은 Win32 API(`SetProcessDpiAwarenessContext` PER_MONITOR_AWARE_V2, `SendInput` ABSOLUTE|VIRTUALDESK, `GetCursorPos`)를 PowerShell P/Invoke 로 불러, 세로 가운데 줄의 x 3840개와 가로 가운데 줄의 y 2160개(6000 지점)에 공식 A, B, C 를 각각 주입하고 되읽는다. 빌드 불필요, 18000번 이동에 6.2초.
+  - 1회차: A 222, B 2907, C 77. 세 공식 모두 같은 구간(x 383~1493, 3001~3795, y 12~45)에서 스윕하지 않은 축까지 틀어지거나 20픽셀 넘게 벗어난 행이 있었다. 실행 중 실제 마우스 입력이 섞인 것으로 보고 버렸다.
+  - 2회차 (마우스를 들어 둔 상태): `points=6000 formulaA_mismatches=149 formulaB_mismatches=2864 formulaC_mismatches=0`. A 는 x 112건·y 37건, B 는 x 1792건·y 1072건이며 모두 스윕 방향으로 정확히 1픽셀 모자람 (`dx=-1` 또는 `dy=-1`). 위 floor 가정과 맞다.
+- 판정: 계획의 두 공식 A, B 는 **실패**. 공식 C 는 6000 지점 불일치 0건으로 기준을 만족하지만 모니터 1대·배율 1종 조건이라 **부분**. 다중 모니터, 음수 원점, 배율 혼합은 확인하지 못했다.
+- 설계 영향: spec 6.3 의 좌표 공식은 공식 C `((x - vx) * 65536 + vw - 1) / vw` (y 도 같은 형태)로 바꾼다. 다중 모니터 확인 전까지는 제품 구현에서 주입 후 `GetCursorPos` 되읽기 검사를 테스트로 남긴다.
+
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
 ## T12 egui
 ## T13 WiX MSI
