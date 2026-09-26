@@ -129,7 +129,9 @@ impl Peer {
                 Output::Timeout(_) => return Ok(()),
                 Output::Transmit(t) => {
                     if let Some(sock) = self.sockets.get(&t.source) {
-                        sock.send_to(&t.contents, t.destination)?;
+                        // UDP is best effort: a failed send (no route to one candidate,
+                        // full buffer) only loses this datagram. ICE/SCTP retransmit.
+                        let _ = sock.send_to(&t.contents, t.destination);
                     }
                 }
                 Output::Event(event) => {
@@ -166,7 +168,7 @@ impl Peer {
                         .handle_input(input)
                         .map_err(|e| TransportError::Rtc(e.to_string()))?;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) if recv_error_is_transient(e.kind()) => {}
                 Err(e) => return Err(TransportError::Io(e)),
             }
         }
@@ -224,5 +226,44 @@ impl Peer {
 
     pub fn close(&mut self) {
         let _ = self.rtc.close();
+    }
+}
+
+/// `recv_from` 오류 중 socket 을 계속 써도 되는 것.
+/// - `WouldBlock` (Unix) / `TimedOut` (Windows): 읽을 datagram 이 없음.
+/// - `ConnectionReset`: Windows 가 앞선 `send_to` 에 대한 ICMP port unreachable 을
+///   연결하지 않은 UDP socket 에도 `WSAECONNRESET` 으로 알린다. datagram 하나를 잃은 것뿐.
+/// - `ConnectionRefused`: 같은 ICMP 보고를 이 값으로 내는 stack 이 있다.
+fn recv_error_is_transient(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind::*;
+    matches!(kind, WouldBlock | TimedOut | ConnectionReset | ConnectionRefused)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+
+    #[test]
+    fn recv_errors_that_mean_no_data_or_one_lost_datagram_are_transient() {
+        // WouldBlock (Unix) / TimedOut (Windows): nothing to read.
+        assert!(recv_error_is_transient(ErrorKind::WouldBlock));
+        assert!(recv_error_is_transient(ErrorKind::TimedOut));
+        // Windows WSAECONNRESET after an ICMP port unreachable for an earlier send_to.
+        assert!(recv_error_is_transient(ErrorKind::ConnectionReset));
+        // Same ICMP report surfaced as ECONNREFUSED on some stacks.
+        assert!(recv_error_is_transient(ErrorKind::ConnectionRefused));
+    }
+
+    #[test]
+    fn other_recv_errors_are_fatal() {
+        for kind in [
+            ErrorKind::PermissionDenied,
+            ErrorKind::InvalidInput,
+            ErrorKind::NotConnected,
+            ErrorKind::Other,
+        ] {
+            assert!(!recv_error_is_transient(kind), "{kind:?} must propagate");
+        }
     }
 }
