@@ -6,3 +6,4 @@ edition.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }
 auth = { workspace = true }
+zeroize = { workspace = true }
