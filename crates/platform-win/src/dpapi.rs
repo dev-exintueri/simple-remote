@@ -22,20 +22,44 @@ impl DpapiProtector {
 }
 
 fn entropy_blob() -> CRYPT_INTEGER_BLOB {
+    // ENTROPY 는 컴파일 시점에 고정된 짧은 상수라 u32 범위를 벗어날 일이 없다.
     CRYPT_INTEGER_BLOB {
         cbData: ENTROPY.len() as u32,
         pbData: ENTROPY.as_ptr() as *mut u8,
     }
 }
 
-/// DPAPI 가 채운 출력 buffer 를 복사해 오고 `LocalFree` 로 해제한다.
-unsafe fn take_blob(blob: &CRYPT_INTEGER_BLOB) -> Vec<u8> {
+/// `CRYPT_INTEGER_BLOB.cbData` 는 `u32` 라서 그보다 큰 입력은 `as u32` 로 조용히 잘려나간다.
+/// 그런 축소가 저장 파일을 조용히 깨뜨리지 않도록, 넘치면 여기서 fail closed 한다.
+fn checked_len(bytes: &[u8]) -> Result<u32, StoreError> {
+    u32::try_from(bytes.len()).map_err(|_| StoreError::Protect("input too large".into()))
+}
+
+/// `take_blob` 이 넘겨받는 blob 이 평문(비밀)인지 암호문인지 표시한다. `Plaintext` 를
+/// 넘기면 복사 후 `LocalFree` 전에 원본 buffer 를 0 으로 덮어써서, DPAPI 가 할당한 힙
+/// 조각에 평문 사본이 해제된 뒤에도 남지 않게 한다. `Ciphertext` 는 비밀이 아니므로
+/// 덮어쓰지 않는다. 호출부마다 명시적으로 골라야 하므로 새 호출을 추가하며 지우는 걸
+/// 잊을 수 없다.
+enum BlobKind {
+    Plaintext,
+    Ciphertext,
+}
+
+/// DPAPI 가 채운 출력 buffer 를 복사해 오고 `LocalFree` 로 해제한다. `kind` 가
+/// `BlobKind::Plaintext` 면 복사가 끝난 원본 buffer 를 해제 전에 0 으로 덮어쓴다
+/// (평문이 해제된 힙 메모리에 그대로 남는 것을 막는다).
+unsafe fn take_blob(blob: &CRYPT_INTEGER_BLOB, kind: BlobKind) -> Vec<u8> {
     let out = if blob.cbData == 0 || blob.pbData.is_null() {
         Vec::new()
     } else {
         unsafe { std::slice::from_raw_parts(blob.pbData, blob.cbData as usize).to_vec() }
     };
     if !blob.pbData.is_null() {
+        if matches!(kind, BlobKind::Plaintext) {
+            unsafe {
+                std::ptr::write_bytes(blob.pbData, 0, blob.cbData as usize);
+            }
+        }
         unsafe {
             let _ = LocalFree(Some(HLOCAL(blob.pbData as *mut _)));
         }
@@ -46,7 +70,7 @@ unsafe fn take_blob(blob: &CRYPT_INTEGER_BLOB) -> Vec<u8> {
 impl Protector for DpapiProtector {
     fn protect(&self, plain: &[u8]) -> Result<Vec<u8>, StoreError> {
         let data_in = CRYPT_INTEGER_BLOB {
-            cbData: plain.len() as u32,
+            cbData: checked_len(plain)?,
             pbData: plain.as_ptr() as *mut u8,
         };
         let entropy = entropy_blob();
@@ -62,13 +86,14 @@ impl Protector for DpapiProtector {
                 &mut data_out,
             )
             .map_err(|e| StoreError::Protect(e.to_string()))?;
-            Ok(take_blob(&data_out))
+            // 결과는 암호문이므로 해제 전에 덮어쓸 필요가 없다.
+            Ok(take_blob(&data_out, BlobKind::Ciphertext))
         }
     }
 
     fn unprotect(&self, blob: &[u8]) -> Result<Zeroizing<Vec<u8>>, StoreError> {
         let data_in = CRYPT_INTEGER_BLOB {
-            cbData: blob.len() as u32,
+            cbData: checked_len(blob)?,
             pbData: blob.as_ptr() as *mut u8,
         };
         let entropy = entropy_blob();
@@ -84,7 +109,9 @@ impl Protector for DpapiProtector {
                 &mut data_out,
             )
             .map_err(|e| StoreError::Protect(e.to_string()))?;
-            Ok(Zeroizing::new(take_blob(&data_out)))
+            // 결과는 평문이므로 Zeroizing 으로 복사한 뒤 DPAPI 가 할당한 원본 buffer 를
+            // LocalFree 전에 0 으로 덮어쓴다 (take_blob 이 강제한다).
+            Ok(Zeroizing::new(take_blob(&data_out, BlobKind::Plaintext)))
         }
     }
 }
