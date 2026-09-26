@@ -1,15 +1,10 @@
 [package]
-name = "host-agent"
+name = "viewer-core"
 version = "0.1.0"
 edition.workspace = true
 
 [lib]
-name = "host_agent"
-path = "src/lib.rs"
-
-[[bin]]
-name = "host-agent"
-path = "src/main.rs"
+name = "viewer_core"
 
 [dependencies]
 protocol = { workspace = true }
@@ -17,7 +12,3 @@ auth = { workspace = true }
 transport = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-transport = { workspace = true, features = ["test-support"] }
-viewer-core = { workspace = true }
