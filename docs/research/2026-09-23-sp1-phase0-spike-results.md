@@ -186,6 +186,25 @@ target_x,target_y,formula,nx,ny,got_x,got_y,dx,dy
 - 설계 영향: spec 6.3 의 좌표 공식은 공식 C `((x - vx) * 65536 + vw - 1) / vw` (y 도 같은 형태)로 바꾼다. 다중 모니터 확인 전까지는 제품 구현에서 주입 후 `GetCursorPos` 되읽기 검사를 테스트로 남긴다.
 
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
+
+- 질문: 사용자 세션에서 도는 SYSTEM 프로세스가 하드웨어 H.264 MFT 를 만들고 D3D11 NV12 texture 를 넣어 인코딩할 수 있나? 안 되면 소프트웨어 MFT 는 되나?
+- 기준: 통과 = SYSTEM + 사용자 세션에서 `RESULT mode=hardware ... frames_in=30 frames_out>=25 bytes_out>0`.
+- 실행: 사람 PC (Windows 11 Pro 26200, NVIDIA GeForce RTX 3060 Ti driver 32.0.15.9186, GPU 1개). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592237 의 artifact `win-probes`. SYSTEM 실행은 관리자 명령 프롬프트에서 `PsExec64.exe -accepteula -s -i 1 cmd /c "C:\spike\mf_probe.exe > C:\spike\mf-system.txt 2>&1"` (Active 세션 ID 1, T9 대로 SYSTEM 쪽 cmd 가 파일로 씀).
+
+| 계정·세션 | 모드 | 인코더 | frames_in | frames_out | bytes_out | 첫 출력 (ms) |
+|---|---|---|---|---|---|---|
+| lsk30, 1 | hardware | NVIDIA H.264 Encoder MFT | 30 | 30 | 2701 | 4 |
+| lsk30, 1 | software | H264 Encoder MFT | 30 | 17 | 14524 | 56 |
+| SYSTEM, 1 | hardware | NVIDIA H.264 Encoder MFT | 30 | 30 | 2701 | 2 |
+| SYSTEM, 1 | software | H264 Encoder MFT | 30 | 17 | 14524 | 79 |
+
+- 하드웨어 경로의 단계(`MF_TRANSFORM_ASYNC_UNLOCK`, `D3D11CreateDevice(VIDEO|BGRA)`, `MFCreateDXGIDeviceManager`, `SET_D3D_MANAGER`, `SetOutputType`, `SetInputType(NV12)`, `CreateTexture2D(NV12, RENDER_TARGET)`, streaming 시작)는 두 계정 모두 OK. HRESULT 실패 없음.
+- 판정: **통과**. spec 6.2 의 "SYSTEM agent 가 사용자 세션에서 하드웨어 인코더 우선" 가정이 이 PC(NVIDIA) 에서 맞다. Intel·AMD GPU 와 hybrid GPU 노트북은 확인하지 못했다.
+- 해석할 때 주의할 점
+  - 하드웨어 `bytes_out=2701` 은 30 프레임치고 작다. probe 가 texture 를 한 번 만들고 내용을 채우지 않아 매 프레임이 같은 빈 화면이기 때문이다. 인코딩 품질·bitrate 는 이 spike 의 질문이 아니다.
+  - 소프트웨어 `frames_out=17` 은 인코더 실패가 아니다. 소프트웨어 경로는 입력 30장 뒤에 `MFT_MESSAGE_COMMAND_DRAIN` 을 보내지 않아 인코더가 들고 있던 뒤쪽 프레임을 꺼내지 않았다 (`mf_probe.rs` `run_software`). 제품 구현은 스트림 끝과 해상도 변경 때 drain 을 해야 한다.
+  - `H.264 encoders: 1` 목록에 NVIDIA 가 없는 것은 `MFTEnumEx` 가 `MFT_ENUM_FLAG_HARDWARE` 없이는 하드웨어 MFT 를 돌려주지 않기 때문이다. 하드웨어 선택은 이 flag 로 따로 열거한다.
+- 실행 중 겪은 문제: 처음 SYSTEM 실행에서 "액세스 거부"가 났고 `PSEXESVC` 서비스 설치 기록(System 로그 7045)이 없었다. 관리자 권한 창(`whoami /groups` 에서 `High Mandatory Level`)에서 다시 실행해 해결했다. PsExec 출력은 두 번 모두 `cmd exited on DESKTOP-0R38C2A with error code 0.` `IsInRole('Administrators')` 문자열 검사는 이 PC 에서 관리자 창인데도 `False` 를 돌려줘 권한 확인에 쓸 수 없었다.
 ## T12 egui
 ## T13 WiX MSI
 
