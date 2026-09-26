@@ -297,6 +297,15 @@ P2P 조사(`docs/research/2026-09-23-p2p-networking-and-security.md` 1, 3.7, 4, 
   1. 재접속 허가증 + Noise KK (D26) + 기기 key·ID 저장 (Windows 는 DPAPI). 지금은 실행할 때마다 기기 key 와 ID 를 새로 만들어, 같은 host 에 다시 붙으려면 매번 코드가 필요하다. spec 4절, 5.3 과 5.2 6단계의 "이전에 연결한 기기" 표시가 여기에 걸린다.
   2. 미룬 Kick 경쟁 수정: host 가 이미 떠난 viewer 를 내보내려고 보낸 `kick` 이 그 사이 들어온 다음 viewer 를 끊을 수 있다 (지금은 떠난 viewer 에게 Kick 하지 않는 것으로 줄여 둠). `viewer_joined` 와 `kick` 에 viewer 번호를 실어 서버가 번호가 맞을 때만 끊게 한다. protocol·signaling·host 를 함께 바꾼다.
 - 그 뒤로는 spec 에서 다음 계획으로 넘긴 것: 5.4 경로 경주·기록(STUN, UPnP), 5.6 접속 기록, 6~7절(화면·입력·설치), 8.2~8.3.
+- 최종 전체 검토(에이전트) 뒤 고친 것: 서버가 끊은 viewer socket 의 늦은 메시지 전달 차단, UDP datagram 하나의 오류(Windows `WSAECONNRESET`)로 연결 전체가 끝나지 않게 함, signaling 연결에 10초 대기 상한과 받는 메시지 128 KiB 상한, 받은 기기 이름의 길이·제어 문자 확인.
+- 사람 확인 필요: Windows 에서 host-agent 와 viewer 를 실제로 실행해 연결과 `--once` 종료 코드 0 을 확인 (지금까지 Linux/WSL 에서만 실행. 위 `WSAECONNRESET` 처리는 Windows 에서만 드러남). 허락을 21초 넘게 미뤄도 연결이 유지되는지도 한 번 확인.
+- 다음 계획에서 함께 처리할 작은 항목 (최종 검토 분류 "나중", 우선순위 순):
+  - 공개 배포 전: signaling `authenticate()` 가 서명 확인을 기다린 뒤 socket 상태를 다시 보지 않음, 인증하지 않은 host socket 시간 제한 없음(IPv6 /128 단위 요청 제한), viewer-id 요청 제한을 두 IP 로 소진해 정상 viewer 가 10분 막힘.
+  - host-agent 가 세션 중 signaling 을 읽지 않아, 그 사이 들어왔다 나간 viewer 의 옛 `Start` 에 세션 뒤 응답하고 실패를 하나 기록함 ("세션 중" 등록 모드와 함께).
+  - 콘솔 허락 질문: 앞 질문 뒤 미리 쳐 둔 줄이 다음 질문의 답으로 쓰일 수 있음 (host-ui 가 대신할 자리).
+  - signaling 이 끊기면 host-agent 가 다시 등록하지 않고 끝남 (spec 8.2), 세션 중 ICE 끊김 감지 (spec 8.3 heartbeat).
+  - 첫 배포 전: PAKE 코드 변환·HKDF label 을 고정하는 known-answer 테스트.
+  - 테스트 보강: signaling 의 426/400 순서·viewer-id 한도·65,536 byte 경계, 허락 대기 중 viewer 끊김, 일부 bind 실패, WsLink close code 유지.
 
 ### 지난 기록 ("연결 뼈대" 계획 작성 때)
 
