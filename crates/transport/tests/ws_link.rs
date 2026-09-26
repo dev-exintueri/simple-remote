@@ -94,3 +94,43 @@ fn plain_ws_allowed_on_named_loopback_forms() {
         _ => {}
     }
 }
+
+/// TCP 연결은 받지만 HTTP upgrade 에 답하지 않는 서버: 연결 대기에 상한이 있어야 한다.
+#[test]
+fn silent_server_does_not_hang_connect() {
+    // accept 하지 않아도 kernel 이 TCP 연결을 끝내므로, listener 를 살려 두기만 한다.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("ws://127.0.0.1:{port}/v1/viewer/1");
+
+    let started = std::time::Instant::now();
+    let result = WsLink::<ServerToViewer, ViewerToServer>::connect(&url);
+    let elapsed = started.elapsed();
+
+    assert!(result.is_err(), "upgrade 응답이 없으면 오류여야 한다");
+    assert!(elapsed < Duration::from_secs(12), "연결 대기가 너무 길다: {elapsed:?}");
+    drop(listener);
+}
+
+/// Worker 는 64 KiB 넘는 메시지를 받지 않으므로, 그보다 훨씬 큰 메시지는 전달하지 않고 오류로 낸다.
+#[test]
+fn oversized_message_is_rejected() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("ws://127.0.0.1:{port}/v1/viewer/1");
+
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut ws = tungstenite::accept(stream).unwrap();
+        let big = format!(r#"{{"t":"relay","data":"{}"}}"#, "a".repeat(200 * 1024));
+        let _ = ws.send(tungstenite::Message::text(big));
+        // client 가 읽을 때까지 socket 을 열어 둔다.
+        let _ = ws.read();
+    });
+
+    let mut l: WsLink<ServerToViewer, ViewerToServer> = WsLink::connect(&url).unwrap();
+    let got = l.recv(Duration::from_secs(5));
+    assert!(matches!(got, Err(LinkError::Protocol(_))), "큰 메시지는 Protocol 오류여야 한다: {got:?}");
+    drop(l);
+    server.join().unwrap();
+}

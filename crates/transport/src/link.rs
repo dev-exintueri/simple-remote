@@ -1,12 +1,19 @@
 use std::marker::PhantomData;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tungstenite::handshake::HandshakeError;
+use tungstenite::protocol::WebSocketConfig;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
+
+/// TCP 연결(주소마다)과 TLS + HTTP upgrade 의 read/write 한 번에 기다리는 상한 (설계 제안값).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// 받는 WebSocket message/frame 상한. Worker 가 64 KiB 넘는 메시지를 막으므로 넉넉히 두 배.
+const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
 /// signaling 채널 하나(host 쪽 또는 viewer 쪽)를 추상화한다.
 /// `In` 은 상대에서 오는 메시지 타입, `Out` 은 내가 보내는 메시지 타입이다.
@@ -42,11 +49,37 @@ pub struct WsLink<In, Out> {
 }
 
 impl<In, Out> WsLink<In, Out> {
+    /// 모든 대기에 상한이 있다: 주소마다 TCP 연결 [`CONNECT_TIMEOUT`], TLS + HTTP upgrade 의
+    /// 각 read/write 도 [`CONNECT_TIMEOUT`]. write timeout 은 연결 뒤에도 남아 `send` 를 묶고,
+    /// read timeout 은 `recv` 가 매번 다시 건다. [`MAX_MESSAGE_BYTES`] 를 넘는 메시지나 frame 은
+    /// `recv` 에서 [`LinkError::Protocol`] 이 된다.
     pub fn connect(url: &str) -> Result<Self, LinkError> {
-        ensure_secure_url(url)?;
+        let uri = ensure_secure_url(url)?;
         install_rustls_provider();
 
-        let (ws, _response) = tungstenite::connect(url).map_err(map_tungstenite_err)?;
+        let host = strip_ipv6_brackets(uri.host().ok_or(LinkError::InsecureUrl)?);
+        let default_port = if uri.scheme_str().unwrap_or("").eq_ignore_ascii_case("wss") { 443 } else { 80 };
+        let port = uri.port_u16().unwrap_or(default_port);
+        let stream = connect_tcp(host, port)?;
+        stream.set_nodelay(true).map_err(LinkError::Io)?;
+        stream.set_read_timeout(Some(CONNECT_TIMEOUT)).map_err(LinkError::Io)?;
+        stream.set_write_timeout(Some(CONNECT_TIMEOUT)).map_err(LinkError::Io)?;
+
+        let config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_MESSAGE_BYTES))
+            .max_frame_size(Some(MAX_MESSAGE_BYTES));
+        let (ws, _response) = match tungstenite::client_tls_with_config(url, stream, Some(config), None) {
+            Ok(pair) => pair,
+            Err(HandshakeError::Failure(e)) => return Err(map_tungstenite_err(e)),
+            // A blocking stream only "would block" when its read/write timeout fired (Unix
+            // reports the timeout as WouldBlock; Windows as TimedOut, which comes as Failure).
+            Err(HandshakeError::Interrupted(_)) => {
+                return Err(LinkError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "websocket handshake timed out",
+                )));
+            }
+        };
         Ok(WsLink { ws, closed: None, _in: PhantomData, _out: PhantomData })
     }
 
@@ -133,6 +166,18 @@ impl<In, Out> WsLink<In, Out> {
     }
 }
 
+/// resolve 된 주소를 차례로 [`CONNECT_TIMEOUT`] 씩 시도한다. 모두 실패하면 마지막 오류.
+fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, LinkError> {
+    let mut last_err = std::io::Error::new(std::io::ErrorKind::NotFound, "host resolved to no address");
+    for addr in (host, port).to_socket_addrs().map_err(LinkError::Io)? {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(LinkError::Io(last_err))
+}
+
 fn is_timeout(io: &std::io::Error) -> bool {
     matches!(io.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)
 }
@@ -159,12 +204,13 @@ fn install_rustls_provider() {
 /// userinfo 뒤에 진짜 host 를 숨기는 URL 을 통과시킬 수 있으므로, `tungstenite::http::Uri`
 /// (tungstenite 가 `pub use http;` 로 재노출) 로 한 번만 파싱해서 판단한다. 파싱 실패는
 /// `InsecureUrl` 로 막는다(fail closed).
-fn ensure_secure_url(url: &str) -> Result<(), LinkError> {
+/// 통과하면 파싱한 `Uri` 를 돌려주어 connect 가 같은 값으로 접속하게 한다.
+fn ensure_secure_url(url: &str) -> Result<tungstenite::http::Uri, LinkError> {
     let uri: tungstenite::http::Uri = url.parse().map_err(|_| LinkError::InsecureUrl)?;
 
     let scheme = uri.scheme_str().unwrap_or("");
     if scheme.eq_ignore_ascii_case("wss") {
-        return Ok(());
+        return Ok(uri);
     }
     if !scheme.eq_ignore_ascii_case("ws") {
         return Err(LinkError::InsecureUrl);
@@ -192,7 +238,7 @@ fn ensure_secure_url(url: &str) -> Result<(), LinkError> {
     // `Authority::host()` 는 IPv6 literal 이면 대괄호를 포함해서 돌려준다(`"[::1]"`).
     let host = strip_ipv6_brackets(raw_host);
     if host.eq_ignore_ascii_case("127.0.0.1") || host == "::1" || host.eq_ignore_ascii_case("localhost") {
-        Ok(())
+        Ok(uri)
     } else {
         Err(LinkError::InsecureUrl)
     }
