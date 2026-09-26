@@ -6,9 +6,9 @@
 
 | 문서 | 내용 |
 |---|---|
-| `docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md` | 현재 진행 상태, 다음 할 일, 결정 기록 D1~D24. 맨 앞의 "로컬 Windows 세션 인계" 절부터 읽는다 |
+| `docs/superpowers/progress/2026-09-23-remote-control-brainstorming.md` | 현재 진행 상태, 다음 할 일, 결정 기록 D1~D32. 맨 앞의 "현재 상태와 인계" 절부터 읽는다 |
 | `docs/superpowers/specs/2026-09-24-simple-remote-sp1-design.md` | 승인된 SP1 설계 spec. 구현의 기준 |
-| `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` | SP1 Phase 0 (spike) 계획. 실행 중 |
+| `docs/superpowers/plans/2026-09-23-sp1-phase0-spikes.md` | SP1 Phase 0 (spike) 계획. 끝남 |
 | `docs/research/2026-09-23-sp1-phase0-spike-results.md` | Phase 0 spike 결과 (task 별) |
 | `docs/research/` | spec 의 근거 조사 3건 (TeamViewer 기능, P2P·보안, Windows/macOS host 플랫폼) |
 

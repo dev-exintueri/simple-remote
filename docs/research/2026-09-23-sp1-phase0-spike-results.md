@@ -111,6 +111,8 @@
   - IPv6: `RESULT ip=::1 ok=true ms=484` (실제 UDP socket, str0m).
 - 클라우드 확인: 이 클라우드 컨테이너는 IPv6 가 없어 `::1` bind 가 `Address family not supported` 로 실패한다. 대신 `127.0.0.1` 로 `ok=true ms=213` 을 확인했다 (계획 2단계의 기대값과 다른 점).
 - 판정: **Actions 부분 통과**. 사람 PC 의 전역 IPv6 주소 확인은 H1 답을 받은 뒤 한다.
+- 사람 PC (Windows 11 Pro 26200): `ipconfig` 에 IPv6 줄이 없고 `Get-NetIPAddress -AddressFamily IPv6` 에 2 또는 3 으로 시작하는 주소가 없다. 계획 기준대로 **IPv6 없음**으로 기록하고 판정에서 뺀다. 전역 IPv6 UDP 연결은 IPv6 가 있는 회선에서 제품 단계의 연결 시험 때 다시 확인한다.
+- 최종 판정: **통과** (Windows 빌드, Linux 와 같은 테스트 결과, `::1` 연결. 전역 IPv6 는 환경이 없어 제외).
 - 계획과 다르게 바꾼 점: webrtc-rs 테스트 step 은 `bwe` 가 Linux 에서 이미 실패로 판정되어 `--no-fail-fast` + `continue-on-error` 로 돌렸다.
 - 사용량: 이 job 은 12분 41초 (Windows 차감 약 26분). 대부분 cache 없는 Rust 빌드 시간이다.
 
@@ -164,8 +166,73 @@
 - Task 11 (사람 PC) 에서도 PsExec 출력이 비면 같은 방식(`cmd /c ... > 파일`)으로 받는다.
 
 ## T10 SendInput 절대 좌표
+
+- 질문: physical pixel 좌표를 0..65535 로 바꾸는 공식 A `((x - vx) * 65535) / (vw - 1)` 와 공식 B `((x - vx) * 65536 + vw / 2) / vw` 중 어느 것이 커서를 정확한 픽셀에 놓나?
+- 기준: 통과 = 한 공식이 불일치 0건. 두 공식 다 불일치가 있으면 실패. 모니터가 1개거나 배율이 모두 같으면 "부분".
+- 실행: 사람 PC (Windows 11 Pro 26200, RTX 3060 Ti, LG UltraFine 1대 3840x2160 배율 150%). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592237 (windows-probes, commit `d1a566f`) 의 artifact `win-probes`.
+- 출력 요약: `virtual_desktop origin=(0,0) size=(3840x2160)`, `monitor[0] rect=(0,0)-(3840,2160)`, `points=11 formulaA_mismatches=1 formulaB_mismatches=2`.
+- 불일치 행 (CSV 원문, 나머지 19행은 `dx=0, dy=0`)
+
+```
+target_x,target_y,formula,nx,ny,got_x,got_y,dx,dy
+1,1,A,17,30,0,0,-1,-1
+1,1,B,17,30,0,0,-1,-1
+3838,2158,B,65502,65475,3838,2157,0,-1
+```
+
+- 분석: 22행 모두 "Windows 가 픽셀을 `floor(n * vw / 65536)` 로 정한다"는 가정과 맞는다. 예: `n=17` → `17*3840/65536 = 0.996` → 0, `n=65475` → `65475*2160/65536 = 2157.99` → 2157. 이 가정에서 목표 픽셀 x 에 정확히 떨어지는 최소 값은 `ceil((x - vx) * 65536 / vw)` 이다 (공식 C: `((x - vx) * 65536 + vw - 1) / vw`). 공식 A 는 1 근처처럼 작은 좌표에서 모자라고, 공식 B 는 반올림이라 절반 확률로 모자란다. 공식 C 는 이 PC 에서 아직 실행해 보지 않은 추론이다. Microsoft 문서는 변환 규칙을 밝히지 않는다.
+- 추가 검사 (계획 밖, 사용자 승인): 공식 C 를 확인하려고 `spikes/sendinput-sweep/sweep.ps1` 을 만들었다. 같은 Win32 API(`SetProcessDpiAwarenessContext` PER_MONITOR_AWARE_V2, `SendInput` ABSOLUTE|VIRTUALDESK, `GetCursorPos`)를 PowerShell P/Invoke 로 불러, 세로 가운데 줄의 x 3840개와 가로 가운데 줄의 y 2160개(6000 지점)에 공식 A, B, C 를 각각 주입하고 되읽는다. 빌드 불필요, 18000번 이동에 6.2초.
+  - 1회차: A 222, B 2907, C 77. 세 공식 모두 같은 구간(x 383~1493, 3001~3795, y 12~45)에서 스윕하지 않은 축까지 틀어지거나 20픽셀 넘게 벗어난 행이 있었다. 실행 중 실제 마우스 입력이 섞인 것으로 보고 버렸다.
+  - 2회차 (마우스를 들어 둔 상태): `points=6000 formulaA_mismatches=149 formulaB_mismatches=2864 formulaC_mismatches=0`. A 는 x 112건·y 37건, B 는 x 1792건·y 1072건이며 모두 스윕 방향으로 정확히 1픽셀 모자람 (`dx=-1` 또는 `dy=-1`). 위 floor 가정과 맞다.
+- 판정: 계획의 두 공식 A, B 는 **실패**. 공식 C 는 6000 지점 불일치 0건으로 기준을 만족하지만 모니터 1대·배율 1종 조건이라 **부분**. 다중 모니터, 음수 원점, 배율 혼합은 확인하지 못했다.
+- 설계 영향: spec 6.3 의 좌표 공식은 공식 C `((x - vx) * 65536 + vw - 1) / vw` (y 도 같은 형태)로 바꾼다. 다중 모니터 확인 전까지는 제품 구현에서 주입 후 `GetCursorPos` 되읽기 검사를 테스트로 남긴다.
+
 ## T11 MF 하드웨어 인코더 (SYSTEM agent)
+
+- 질문: 사용자 세션에서 도는 SYSTEM 프로세스가 하드웨어 H.264 MFT 를 만들고 D3D11 NV12 texture 를 넣어 인코딩할 수 있나? 안 되면 소프트웨어 MFT 는 되나?
+- 기준: 통과 = SYSTEM + 사용자 세션에서 `RESULT mode=hardware ... frames_in=30 frames_out>=25 bytes_out>0`.
+- 실행: 사람 PC (Windows 11 Pro 26200, NVIDIA GeForce RTX 3060 Ti driver 32.0.15.9186, GPU 1개). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592237 의 artifact `win-probes`. SYSTEM 실행은 관리자 명령 프롬프트에서 `PsExec64.exe -accepteula -s -i 1 cmd /c "C:\spike\mf_probe.exe > C:\spike\mf-system.txt 2>&1"` (Active 세션 ID 1, T9 대로 SYSTEM 쪽 cmd 가 파일로 씀).
+
+| 계정·세션 | 모드 | 인코더 | frames_in | frames_out | bytes_out | 첫 출력 (ms) |
+|---|---|---|---|---|---|---|
+| lsk30, 1 | hardware | NVIDIA H.264 Encoder MFT | 30 | 30 | 2701 | 4 |
+| lsk30, 1 | software | H264 Encoder MFT | 30 | 17 | 14524 | 56 |
+| SYSTEM, 1 | hardware | NVIDIA H.264 Encoder MFT | 30 | 30 | 2701 | 2 |
+| SYSTEM, 1 | software | H264 Encoder MFT | 30 | 17 | 14524 | 79 |
+
+- 하드웨어 경로의 단계(`MF_TRANSFORM_ASYNC_UNLOCK`, `D3D11CreateDevice(VIDEO|BGRA)`, `MFCreateDXGIDeviceManager`, `SET_D3D_MANAGER`, `SetOutputType`, `SetInputType(NV12)`, `CreateTexture2D(NV12, RENDER_TARGET)`, streaming 시작)는 두 계정 모두 OK. HRESULT 실패 없음.
+- 판정: **통과**. spec 6.2 의 "SYSTEM agent 가 사용자 세션에서 하드웨어 인코더 우선" 가정이 이 PC(NVIDIA) 에서 맞다. Intel·AMD GPU 와 hybrid GPU 노트북은 확인하지 못했다.
+- 해석할 때 주의할 점
+  - 하드웨어 `bytes_out=2701` 은 30 프레임치고 작다. probe 가 texture 를 한 번 만들고 내용을 채우지 않아 매 프레임이 같은 빈 화면이기 때문이다. 인코딩 품질·bitrate 는 이 spike 의 질문이 아니다.
+  - 소프트웨어 `frames_out=17` 은 인코더 실패가 아니다. 소프트웨어 경로는 입력 30장 뒤에 `MFT_MESSAGE_COMMAND_DRAIN` 을 보내지 않아 인코더가 들고 있던 뒤쪽 프레임을 꺼내지 않았다 (`mf_probe.rs` `run_software`). 제품 구현은 스트림 끝과 해상도 변경 때 drain 을 해야 한다.
+  - `H.264 encoders: 1` 목록에 NVIDIA 가 없는 것은 `MFTEnumEx` 가 `MFT_ENUM_FLAG_HARDWARE` 없이는 하드웨어 MFT 를 돌려주지 않기 때문이다. 하드웨어 선택은 이 flag 로 따로 열거한다.
+- 실행 중 겪은 문제: 처음 SYSTEM 실행에서 "액세스 거부"가 났고 `PSEXESVC` 서비스 설치 기록(System 로그 7045)이 없었다. 관리자 권한 창(`whoami /groups` 에서 `High Mandatory Level`)에서 다시 실행해 해결했다. PsExec 출력은 두 번 모두 `cmd exited on DESKTOP-0R38C2A with error code 0.` `IsInRole('Administrators')` 문자열 검사는 이 PC 에서 관리자 창인데도 `False` 를 돌려줘 권한 확인에 쓸 수 없었다.
 ## T12 egui
+
+- 질문: (1) 1920x1080 영상 texture 를 30fps 로 갱신할 때 한 프레임 처리 시간과 `set`/`set_partial` 차이 (2) Windows 기본 한국어 IME 로 한글 조합·확정·조합 중 백스페이스가 정상인가 (3) 배율이 바뀌면 `pixels_per_point` 가 따라가고 글자가 선명한가
+- 실행: 사람 PC (Windows 11 Pro 26200, RTX 3060 Ti, 3840x2160 모니터 1대, Microsoft 한국어 IME 두벌식). exe 는 https://github.com/dev-exintueri/simple-remote/actions/runs/36226592235 (windows-egui, commit `d1a566f`) 의 artifact `win-egui`. 측정값은 에이전트가 창을 화면 캡처해서 읽었다.
+- (1) 성능 (배율 150%, 창 약 1290x830 point, "pace video at 30 fps" 켬)
+
+| 업로드 방식 | paints/s | cpu_usage avg / p95 / max (ms) | ui() p95 (ms) | convert p95 (ms) |
+|---|---|---|---|---|
+| `set_partial` (시작 후 약 20초) | 57 | 3.31 / 6.68 / 9.09 | 5.03 | 3.79 |
+| `set_partial` (시작 후 약 30초) | 60 | 2.89 / 5.61 / 8.32 | 3.68 | 2.46 |
+| `set_partial` (약 8분 연속) | 58 | 3.07 / 7.17 / 9.06 | 4.64 | 3.35 |
+| `set` | 61 | 3.01 / 6.70 / 8.42 | 3.99 | 2.79 |
+| `set` (배율 125%, 창 최대화) | 60 | 2.79 / 5.50 / 6.66 | 3.43 | 2.32 |
+
+  - `upload` 는 모든 경우 avg 0.00 ms 다. `set`/`set_partial` 호출은 변경을 기록만 하고 실제 GPU 전송은 render 단계에서 일어나 `cpu_usage` 에 포함된다. 이 PC 에서는 두 방식의 차이가 측정 흔들림보다 작다.
+  - `paints/s` 57~61 은 모니터 60Hz vsync 에 맞춘 화면 갱신 수다. 영상 프레임 수(`video frames`)는 30fps pacing 으로 늘었다.
+- (2) 한글 IME: 사람 입력 1회 + 자동 입력 1회.
+  - 사람 입력: 두 칸 모두 `원격 지원 테스트 한글 입력 확인` 이 그대로 들어갔고 이벤트는 `Preedit("ㄹ") → ("려") → ("력") → Preedit("") + Commit("력")` 흐름.
+  - 자동 입력 (`spikes/egui-ime-auto/ime.ps1`, 계획 밖, 사용자 요청): `SendInput` 으로 두벌식 키를 넣어 IME 를 거치게 하고 단계마다 창을 캡처했다. `d n j` 뒤 칸에 조합 중 "워" 가 강조 표시로 보임 (`Preedit("ㅇ") → ("우") → ("워")`). 백스페이스 한 번 뒤 `Preedit("우")` 와 칸에 "우" (자모 하나만 지움). 이어서 `j s` 로 "원". 백스페이스는 IME 가 소비해 egui `Key` 이벤트로 오지 않았다 (egui 가 글자를 한 번 더 지우지 않음). 최종 두 칸 모두 `원격 지원 테스트 한글 입력 확인`.
+  - 자동 입력에서 알게 된 것: `ImmGetDefaultIMEWnd` + `IMC_GETCONVERSIONMODE` 로 읽은 모드 값(9)은 실제 한/영 상태와 맞지 않았다 (영문 상태인데 NATIVE 비트가 켜짐). IME 상태 확인은 결과 캡처로 했다.
+- (3) DPI: 모니터가 1대라 계획대로 설정에서 배율을 바꿨다. 150% 에서 `pixels_per_point 1.500 native Some(1.5)`, 실행 중 125% 로 바꾸자 `pixels_per_point 1.250 native Some(1.25)` 이고 창의 물리 크기도 1942x1256 에서 1618x1047 로 같은 비율로 줄었다. 캡처에서 글자가 선명했다.
+- 판정
+  - (1) **통과**: `paints/s` 29 이상, `set_partial` 의 `cpu_usage` p95 5.61~7.17 ms (기준 16 ms 이하).
+  - (2) **통과**.
+  - (3) **부분**: 배율 변경은 따라가지만, 배율이 다른 두 모니터 사이의 창 이동은 확인하지 못했다.
+- 제품 설계에 줄 것: 한글 글꼴은 `C:\Windows\Fonts\malgun.ttf` 를 `FontPriority::Lowest` 로 넣어 동작했다. 입력 칸 테스트 자동화는 `SendInput` 키 입력 + 화면 캡처로 가능하다.
 ## T13 WiX MSI
 
 - 질문: WiX 7 로 spec 7.1 구성의 MSI 를 만들 수 있나? 설치 후 실제 상태가 선언과 같나? 비정상 종료 뒤 재시작되나? 제거 뒤 흔적이 없나?
@@ -192,3 +259,43 @@
   - 이용 조건: WiX 7 은 `-acceptEula wix7` 이 있어야 빌드한다. 개인 비영리는 OSMF 요금 면제.
 
 ## 종합
+
+### 판정 표
+
+| task | 질문 | 판정 | 한 줄 요약 |
+|---|---|---|---|
+| T1 | Actions Windows 빌드 | 통과 | `windows-2025` 에서 빌드·실행, job 약 1~13분 |
+| T2 | PAKE | 통과 | `pakery-spake2` 0.6.0 P-256 이 RFC 9382 vector 재현, key 확인 동작. `spake2` 0.4 는 RFC 아님 |
+| T3 | 재접속 key 합의 | 통과 | `snow` 0.10 Noise KK 동작. X25519 key 만 받음 |
+| T4 | str0m | 통과 5/5 | 외부 후보는 같은 socket 의 host 후보 필요 |
+| T5 | webrtc-rs | 4/5 | 손실 뒤 대역폭 추정 회복 못 함 |
+| T6 | Windows 빌드·IPv6 | 통과 | MSVC 빌드, `::1` 연결. 사람 PC 는 전역 IPv6 없음 (제외) |
+| T7 | WebRTC 라이브러리 | 결정 | `str0m` 0.23.1 (D23, spec 반영 끝) |
+| T8 | Workers 로컬 테스트 | 통과 | `@cloudflare/vitest-plugin`, npm 11 필요 |
+| T9 | SYSTEM DPAPI | 통과 | 관리자 계정도 API 로 못 풂 |
+| T10 | SendInput 좌표 | 공식 A·B 실패, 공식 C 부분 | 올림 공식 C 가 6000 지점 불일치 0. 모니터 1대 조건 |
+| T11 | MF 인코더 (SYSTEM) | 통과 | SYSTEM·사용자 세션에서 NVIDIA 하드웨어 MFT, D3D11 texture 30/30 |
+| T12 | egui | 통과 2 / 부분 1 | 성능·한글 IME 통과, DPI 는 배율 변경만 확인 |
+| T13 | WiX MSI | 통과 14/14 | 데이터 삭제는 LocalSystem deferred custom action 필요 |
+
+### 확인하지 못한 조건 (제품 단계 테스트로 넘김)
+
+- 다중 모니터(배율 혼합, 음수 origin)에서 SendInput 공식 C (T10) 와 egui 창 이동 DPI (T12). 사람 PC 가 모니터 1대라 불가.
+- Intel·AMD·hybrid GPU 의 SYSTEM 하드웨어 MFT (T11). 사람 PC 는 NVIDIA 하나.
+- 실제 전역 IPv6 UDP 연결 (T6). 사람 PC 회선에 IPv6 없음.
+
+### spec 반영 변경 목록 (승인 요청)
+
+상태: **S1~S9 전부 사용자 승인**. spec 과 진행 기록 결정 기록 D25~D32 에 반영했다 (S7·S8 은 D31 하나, S9 는 D32).
+
+| 번호 | spec 위치 | 지금 | 바꿀 내용 | 근거 |
+|---|---|---|---|---|
+| S1 | 5.2 3단계, 5.7 둘째 줄 | "SPAKE2, RFC 9382 후보", "`spake2`(RustCrypto) 감사 없음, `opaque-ke` 와 비교" | PAKE 는 `pakery-spake2` `=0.6.0` + `pakery-crypto` P-256-SHA256 (RFC 9382 suite). `crates/auth` 에 격리하고 RFC 9382 vector 를 `crates/auth` 테스트에 둔다. 5.7 한계 문구를 "1인 프로젝트, 미감사, API 변경 잦음 → 버전 고정과 vector 테스트로 완화"로 바꾸고 `opaque-ke` 는 일회용 코드 구조에 맞지 않아 제외했다고 적는다 | T2 |
+| S2 | 4절 표, 5.3 재접속 2단계 | 기기 key 는 Ed25519 하나, "Noise KK 후보" | 4절 표에 "재접속 key: 기기마다 X25519 정적 key 쌍, 공개키는 Ed25519 기기 key 로 서명해 신원에 묶음, 보관·폐기는 기기 key 와 같음" 행 추가. 5.3 을 "`snow` Noise KK (`Noise_KK_25519_ChaChaPoly_BLAKE2s`)"로 확정하고, `snow` 에 넘기기 전 key 길이 32 byte 확인을 적는다 | T3 |
+| S3 | 5.4 후보 줄 | 후보 종류만 나열 | "공유기 매핑 주소는 SDP 에 srflx 후보로 알리고, local 에는 같은 socket 의 host 후보를 함께 둔다. 경로 기록은 str0m `PeerStats.selected_candidate_pair` 로 만든다" 추가 | T4 |
+| S4 | 6.3 셋째 줄 | "반올림 규칙은 문서에 없으므로 되읽어 확인하는 테스트를 둔다" | 변환 공식을 `nx = ((x - vx) * 65536 + vw - 1) / vw` (y 도 같은 형태, 올림)로 정한다. 공식 A·B 는 1픽셀 모자람이 생겨 쓰지 않는다. 되읽기 테스트는 다중 모니터 확인용으로 유지 | T10 |
+| S5 | 6.2 코덱 줄 | "하드웨어 MFT 우선, 없거나 실패하면 소프트웨어" | 그대로 두고 두 가지를 덧붙인다: 하드웨어 MFT 는 `MFT_ENUM_FLAG_HARDWARE` 로 따로 열거한다 (없으면 목록에 안 나옴), 스트림 끝·해상도 변경 때 `MFT_MESSAGE_COMMAND_DRAIN` 으로 남은 프레임을 꺼낸다. SYSTEM agent 에서 동작 확인(NVIDIA) 사실을 근거로 남긴다 | T11 |
+| S6 | 3.3 UI 줄 | "egui 후보, spike 로 확정" | "egui (eframe 0.36, wgpu)" 로 확정. 한글 글꼴은 시스템 `malgun.ttf` 를 fallback 으로 넣는다. 근거: 1080p30 갱신 cpu p95 약 7ms, 한글 IME 통과 | T12 |
+| S7 | 7.1 표 데이터·정책 행, 3.3 설치 줄 | 제거 시 "삭제", "원래 값 복원" | 데이터 폴더 삭제와 `SoftwareSASGeneration` 원래 값 복원은 LocalSystem deferred custom action(`Impersonate="no"`)으로 한다. 업그레이드 때(`UPGRADINGPRODUCTCODE`)는 데이터를 남긴다. 3.3 설치 줄에 "WiX 7.0.0, 빌드에 `-acceptEula wix7`, 개인 비영리는 OSMF 요금 면제" | T13 |
+| S8 | 7.3 첫 줄 | PowerShell 검사 스크립트 | 검사 스크립트는 SYSTEM 으로 실행한다 (관리자 계정은 SYSTEM 전용 폴더의 ACL 도 못 읽음) | T13 |
+| S9 | 11절 표 | 확인할 spike 목록 | 각 행에 "Phase 0 확인 끝, 결과 문서 T 번호" 를 붙이고, 위 "확인하지 못한 조건" 3가지를 남은 확인으로 적는다 | 전체 |
