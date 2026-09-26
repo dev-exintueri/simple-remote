@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "simple-remote-signaling",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "durable_objects": {
+    "bindings": [
+      { "name": "HOST_ROOM", "class_name": "HostRoom" },
+      { "name": "RATE_LIMIT", "class_name": "RateLimit" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HostRoom", "RateLimit"] }]
+}
